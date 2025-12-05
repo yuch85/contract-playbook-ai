@@ -2,6 +2,8 @@
 
 A client-side, AI-powered contract review application built with React, TypeScript, and the Google Gemini API. This tool allows legal professionals to analyze contracts against a specific "Playbook" (a set of negotiation rules), generate new playbooks from existing documents, and redline contracts in a Microsoft Word-compatible editor.
 
+[![Watch the video](https://img.youtube.com/vi/JCCNyjN34EE/maxresdefault.jpg)](https://www.youtube.com/watch?v=JCCNyjN34EE)
+
 ## 🚀 Key Features
 
 *   **Playbook Generation**: Automatically extract negotiation rules, risk positions, and preferred clauses from an existing contract using Gemini 2.5 Flash.
