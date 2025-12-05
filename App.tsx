@@ -382,9 +382,19 @@ export default function App() {
     };
 
     const handleSaveAs = () => {
-        const filename = prompt('Enter filename (without extension):', session.document?.metadata.filename.replace('.docx', '') || 'reviewed_contract');
-        if (filename && editorRef.current) {
+        console.log('💾 Save button clicked!');
+
+        // Use default filename (prompt blocked by iframe sandbox)
+        const baseFilename = session.document?.metadata.filename.replace('.docx', '') || 'reviewed_contract';
+        const filename = `${baseFilename}_reviewed`;
+
+        console.log('📝 Export filename:', filename);
+        console.log('📂 editorRef exists?', !!editorRef.current);
+
+        if (editorRef.current) {
             editorRef.current.exportDocument(filename);
+        } else {
+            console.error('❌ No editorRef - cannot export!');
         }
     };
 
