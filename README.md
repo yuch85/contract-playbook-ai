@@ -1,8 +1,9 @@
-# Contract Playbook AI Reviewer
+# Contract Playbook Reviewer
 
 A client-side, AI-powered contract review application built with React, TypeScript, and the Google Gemini API. This tool allows legal professionals to analyze contracts against a specific "Playbook" (a set of negotiation rules), generate new playbooks from existing documents, and redline contracts in a Microsoft Word-compatible editor.
 
 [![Watch the video](https://img.youtube.com/vi/JCCNyjN34EE/maxresdefault.jpg)](https://www.youtube.com/watch?v=JCCNyjN34EE)
+
 
 ## 🚀 Key Features
 
@@ -72,11 +73,11 @@ Upon launching, you can select between:
 
 ### 2. The Review Process
 1.  **Upload**: Drag and drop a `.docx` file.
-2.  **Select Role**: Tell the AI which role you are acting for (e.g. the "Provider" or "Customer").
+2.  **Select Role**: Tell the AI if you are the "Provider" or "Customer".
 3.  **Select Playbook**: Choose the ruleset to check against.
 4.  **Analysis**: The app chunks the document, classifies clauses locally, and sends relevant sections to Gemini.
 5.  **Review**:
-    *   **Left Sidebar**: See a list of color-coded risks sorted by severity.
+    *   **Left Sidebar**: See a list of risks sorted by severity.
     *   **Center**: The document editor. Clicking a risk scrolls the relevant clause into view.
     *   **Right Sidebar**: See the AI's reasoning, the specific rule violation, and a suggested rewrite. You can "Accept" (apply redline) or "Reject" the finding.
 
