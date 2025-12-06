@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
-import { getClauseExtension } from './extensions/ClauseExtension';
+import { getClauseExtension } from '../ClauseExtension';
 import { calculateWordDiff, DIFF_DELETE, DIFF_INSERT, DIFF_EQUAL } from '../../utils/diff';
 
 interface SuperdocEditorProps {
