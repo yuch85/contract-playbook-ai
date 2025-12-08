@@ -42,7 +42,7 @@ These are complex tasks involving the core engine, data serialization, and backe
 *   **Current State:** We use a custom IR for *contract review* (`irParser.ts`), but *playbook generation* still relies on the LLM outputting raw JSON, which breaks on long documents.
 *   **Task:** Update the playbook generation prompt and parser to use the robust `<<RULE>>...<<END_RULE>>` tag format, significantly improving reliability for large inputs.
 
-### **3. LLM Call Optimization** (High Priority)
+### **3. LLM Call Optimization** (Medium Priority)
 **Goal:** Improve performance and efficiency of LLM interactions.
 *   **Current State:** LLM calls are processed sequentially in batches, which can be slow for large documents.
 *   **Tasks:**
@@ -55,16 +55,16 @@ These are complex tasks involving the core engine, data serialization, and backe
     *   Consider streaming responses for better UX during long operations
     *   **Party Detection Optimization:** Currently party detection runs only after user selects "Review Contract" mode, creating a blocking delay. Consider moving party detection to start immediately on file upload (background processing), with a lightweight contract check to avoid unnecessary LLM calls for non-contract documents. Cache results so they're ready when the user reaches party selection.
 
-### **4. Multi-Provider LLM Architecture**
+### **4. Multi-Provider LLM Architecture** (Medium Priority)
 **Goal:** Decouple the app from Google Gemini.
 *   **Task:** Refactor `services/geminiService.ts` into a provider-agnostic interface. 
 *   **Future Proofing:** Implement support for OpenAI (GPT-4), Anthropic (Claude 3), or local models (Ollama). Ensure the architecture can handle different API signatures and token limits.
 
-### **5. Human-Readable Clause References in AI Reasoning**
+### **5. Human-Readable Clause References in AI Reasoning** (Medium to High Priority)
 **Goal:** Replace UUIDs in AI-generated reasoning with human-readable clause numbers.
 *   **Problem:** Currently, when the AI analyzes contracts, it references clauses by their UUID (e.g., "id: 68a669a9-4ff8-4f1a-ae57-221440b45182"), which is not meaningful to users. The AI reasoning should reference clauses by their actual document numbers (e.g., "Clause 2.1" or "Section 3").
 *   **Current State:** After our refactor from custom clause nodes to Superdoc's native `sdBlockId`, we extract clauses from the Superdoc editor, which loses the original document structure metadata (outline levels, numbering prefixes) that was extracted by `wordAdapter.ts`.
-*   **Preferred Approach (Option B with Approach 1):** Use the original `wordAdapter`-parsed document structure instead of extracting from Superdoc. The `wordAdapter` already accurately extracts:
+*   **Preferred Approach:** Use the original `wordAdapter`-parsed document structure instead of extracting from Superdoc. The `wordAdapter` already accurately extracts:
     *   `outline_level` (0-9, from heading styles)
     *   `numberingPrefix` (calculated from Word's `numbering.xml` using native numbering definitions)
     *   `style` (e.g., "Heading 1", "Normal")

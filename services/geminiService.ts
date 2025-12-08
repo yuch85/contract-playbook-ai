@@ -412,9 +412,9 @@ export const generateEmbedding = async (ai: GoogleGenAI, text: string): Promise<
     try {
         const result = await ai.models.embedContent({
             model: 'text-embedding-004',
-            content: { parts: [{ text }] }
+            contents: { parts: [{ text }] }
         });
-        return result.embedding?.values || null;
+        return result.embeddings?.[0]?.values || null;
     } catch (e) {
         console.warn("Embedding generation failed", e);
         return null;

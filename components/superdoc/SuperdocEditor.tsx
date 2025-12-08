@@ -84,52 +84,6 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         return text.trim();
     };
 
-    // --- GLOBAL METADATA EXTENSION ---
-    // Injects id, risk, and status attributes into standard blocks
-    const getGlobalMetadataExtension = () => {
-        const w = window as any;
-        if (!w.SuperDocLibrary || !w.SuperDocLibrary.Extensions) return null;
-        
-        const { Extension } = w.SuperDocLibrary.Extensions;
-        
-        return Extension.create({
-            name: 'globalMetadata',
-            addGlobalAttributes() {
-                return [
-                    {
-                        types: ['paragraph', 'heading', 'listItem', 'bulletList', 'orderedList'],
-                        attributes: {
-                            id: {
-                                default: null,
-                                parseHTML: (element: HTMLElement) => element.getAttribute('data-id'),
-                                renderHTML: (attributes: any) => {
-                                    if (!attributes.id) return {};
-                                    return { 'data-id': attributes.id };
-                                },
-                            },
-                            risk: {
-                                default: null,
-                                parseHTML: (element: HTMLElement) => element.getAttribute('data-risk'),
-                                renderHTML: (attributes: any) => {
-                                    if (!attributes.risk) return {};
-                                    return { 'data-risk': attributes.risk };
-                                },
-                            },
-                            status: {
-                                default: 'original',
-                                parseHTML: (element: HTMLElement) => element.getAttribute('data-status'),
-                                renderHTML: (attributes: any) => {
-                                    if (!attributes.status) return {};
-                                    return { 'data-status': attributes.status };
-                                },
-                            }
-                        },
-                    },
-                ];
-            },
-        });
-    };
-
     const assembleClauseContext = (clauseId: string, options: ClauseContextOptions = {}): ClauseAssemblyOutput | null => {
         const editor = editorInstanceRef.current;
         if (!editor || !editor.activeEditor) return null;
@@ -143,9 +97,9 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         let parentNode: any = null;
 
         try {
-            // Find node by native ID attribute
+            // Find node by native sdBlockId attribute
             doc.descendants((node: any, pos: number, parent: any, index: number) => {
-                if (node.attrs.id === clauseId) {
+                if (node.attrs.sdBlockId === clauseId) {
                     targetNode = node;
                     targetPos = pos;
                     targetIndex = index;
@@ -281,10 +235,10 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                     const isList = node.type.name.includes('List') || node.type.name === 'listItem';
                     const isHeading = node.type.name === 'heading';
 
-                    if ((hasText || isList || isHeading) && !node.attrs.id) {
+                    // Using native sdBlockId attribute
+                    if ((hasText || isList || isHeading) && !node.attrs.sdBlockId) {
                         const id = generateUUID();
-                        // Only set if the schema allows the 'id' attribute (added by our GlobalMetadataExtension)
-                        tr.setNodeMarkup(pos, undefined, { ...node.attrs, id, status: 'original' });
+                        tr.setNodeMarkup(pos, undefined, { ...node.attrs, sdBlockId: id });
                         count++;
                     }
                 }
@@ -308,17 +262,17 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             
             // Extract all blocks with IDs
             state.doc.descendants((node: any, pos: number) => {
-                if (node.attrs.id) {
+                if (node.attrs.sdBlockId) {
                     // Skip if we've already processed this block ID (prevents recursion/traversal duplicates)
-                    if (seenBlockIds.has(node.attrs.id)) {
+                    if (seenBlockIds.has(node.attrs.sdBlockId)) {
                         return true;
                     }
-                    seenBlockIds.add(node.attrs.id);
+                    seenBlockIds.add(node.attrs.sdBlockId);
 
                     clauses.push({
-                        id: node.attrs.id,
+                        id: node.attrs.sdBlockId,
                         text: extractNodeText(node),
-                        risk: node.attrs.risk,
+                        // risk/status not stored in node anymore
                         startPos: pos,
                         nodeSize: node.nodeSize
                     });
@@ -337,7 +291,7 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             let clauseNode: any = null;
 
             state.doc.descendants((node: any, pos: number) => {
-                if (node.attrs.id === clauseId) {
+                if (node.attrs.sdBlockId === clauseId) {
                     clausePos = pos;
                     clauseNode = node;
                     return false;
@@ -402,16 +356,7 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
 
             dispatch(tr);
             
-            // Mark Status as Pending
-            const { state: finalState, dispatch: finalDispatch } = editor.activeEditor.view;
-            // Note: We use the ID to find the node again as positions might have shifted
-            let newPos = -1;
-            finalState.doc.descendants((n: any, p: number) => { if (n.attrs.id === clauseId) { newPos = p; return false; } return true; });
-            
-            if (newPos !== -1) {
-                const finalTr = finalState.tr.setNodeMarkup(newPos, undefined, { ...finalState.doc.nodeAt(newPos).attrs, status: 'pending' });
-                finalDispatch(finalTr);
-            }
+            // Note: Status metadata is now handled in App.tsx via clauseMetadata, not in document attrs
 
             console.groupEnd();
             return true;
@@ -420,34 +365,32 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         runAssemblyTestSuite
     }));
 
-    // Sync Clause Metadata (Styling)
+    // Sync Clause Metadata (Styling) - Class-based Approach
     useEffect(() => {
-        const editor = editorInstanceRef.current;
-        if (!editor || !editor.activeEditor || !clauseMetadata) return;
+        if (!clauseMetadata || status !== 'ready') return;
         
-        const { state, view } = editor.activeEditor;
-        let tr = state.tr;
-        let modified = false;
-
-        // Traverse doc and apply risk/status attributes from metadata map
-        state.doc.descendants((node: any, pos: number) => {
-            const id = node.attrs.id;
-            if (id && clauseMetadata.has(id)) {
-                const meta = clauseMetadata.get(id);
-                if (meta && (node.attrs.risk !== meta.risk || node.attrs.status !== meta.status)) {
-                    tr = tr.setNodeMarkup(pos, undefined, { ...node.attrs, risk: meta.risk, status: meta.status });
-                    modified = true;
-                }
-            }
-            return true;
+        // Strategy: We are not updating document state (to avoid dirtying document/history).
+        // Instead we update DOM classes directly using the unique data-sd-block-id.
+        // First clean up all risk/status classes to ensure no stale state
+        const allBlocks = document.querySelectorAll('.editor [data-sd-block-id]');
+        allBlocks.forEach(el => {
+            el.classList.remove('risk-red', 'risk-yellow', 'risk-green', 'status-pending', 'status-accepted');
         });
 
-        if (modified) {
-            tr.setMeta('addToHistory', false); // Don't pollute undo stack with styling updates
-            view.dispatch(tr);
-        }
+        // Apply new classes
+        clauseMetadata.forEach((meta, id) => {
+            const el = document.querySelector(`.editor [data-sd-block-id="${id}"]`);
+            if (el) {
+                if (meta.risk === RiskLevel.RED) el.classList.add('risk-red');
+                else if (meta.risk === RiskLevel.YELLOW) el.classList.add('risk-yellow');
+                else if (meta.risk === RiskLevel.GREEN) el.classList.add('risk-green');
+                
+                if (meta.status === 'pending') el.classList.add('status-pending');
+                else if (meta.status === 'accepted') el.classList.add('status-accepted');
+            }
+        });
 
-    }, [clauseMetadata]); // Re-run when metadata map changes
+    }, [clauseMetadata, status]);
 
     const loadSuperdocScript = (): Promise<void> => {
         return new Promise((resolve, reject) => {
@@ -463,11 +406,12 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         });
     };
 
-    // Scroll to active clause
+    // Scroll to active clause and update focus visuals
     useEffect(() => {
         if (!activeFindingId || status !== 'ready') return;
-        // Use data-id selector (injected by our GlobalMetadataExtension)
-        const clauseElement = document.querySelector(`[data-id="${activeFindingId}"]`);
+        
+        // Use data-sd-block-id selector
+        const clauseElement = document.querySelector(`.editor [data-sd-block-id="${activeFindingId}"]`);
         if (clauseElement) {
             clauseElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -479,10 +423,10 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         const container = document.getElementById(CONTAINER_ID);
         const handleClick = (e: MouseEvent) => {
             const target = e.target as HTMLElement;
-            // Check for element with data-id
-            const clickedBlock = target.closest('[data-id]');
+            // Check for element with data-sd-block-id
+            const clickedBlock = target.closest('[data-sd-block-id]');
             if (clickedBlock) {
-                const clickedId = clickedBlock.getAttribute('data-id');
+                const clickedId = clickedBlock.getAttribute('data-sd-block-id');
                 if (clickedId !== activeFindingId) {
                     onClearSelection();
                 }
@@ -563,10 +507,6 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                     const containerEl = document.getElementById(CONTAINER_ID);
                     if (containerEl) containerEl.innerHTML = '';
                     
-                    // Use GlobalMetadataExtension instead of ClauseExtension
-                    const MetadataExt = getGlobalMetadataExtension();
-                    const extensions = MetadataExt ? [MetadataExt] : [];
-
                     const config: any = {
                         selector: `#${CONTAINER_ID}`,
                         toolbar: `#${TOOLBAR_ID}`,
@@ -574,7 +514,7 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                         pagination: true,
                         rulers: true,
                         user: user,
-                        editorExtensions: extensions,
+                        editorExtensions: [],
                         modules: {
                             comments: { readOnly: readOnly, allowResolve: true },
                             trackChanges: { enabled: true }
@@ -636,10 +576,10 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
   .editor { padding: 2.5rem; }
   .super-editor, .ProseMirror { color: #000 !important; }
   
-  /* NATIVE BLOCK STYLING via attributes */
+  /* NATIVE BLOCK STYLING via DOM Classes applied by useEffect */
   
-  /* Base style for any block with an ID */
-  [data-id] {
+  /* Base style for any block with an ID inside the editor */
+  .editor [data-sd-block-id] {
       border-left: 3px solid transparent;
       padding-left: 10px;
       margin-left: -13px;
@@ -647,39 +587,49 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
       position: relative;
   }
   
-  [data-id]:hover {
+  .editor [data-sd-block-id]:hover {
       border-left-color: #cbd5e1;
       background-color: rgba(241, 245, 249, 0.3);
   }
   
-  /* Risk Levels */
-  [data-risk="red"] {
-      border-left-color: #ef4444;
+  /* Risk Levels - applied as classes */
+  .risk-red {
+      border-left-color: #ef4444 !important;
       background-color: rgba(254, 226, 226, 0.2);
   }
-  [data-risk="yellow"] {
-      border-left-color: #f59e0b;
+  .risk-yellow {
+      border-left-color: #f59e0b !important;
       background-color: rgba(255, 251, 235, 0.2);
   }
+  .risk-green {
+      border-left-color: #22c55e !important;
+      background-color: rgba(240, 253, 244, 0.2);
+  }
   
-  /* Status */
-  [data-status="pending"] {
-      /* Highlight pending changes */
+  /* Status - applied as classes */
+  .status-pending {
       background-color: rgba(255, 251, 235, 0.4);
   }
   
-  /* Active Finding Highlight */
+  /* Focus Mode: Highlight Active Clause & Dim Others */
   ${activeFindingId ? `
-  [data-id]:not([data-id="${activeFindingId}"]) {
-      opacity: 0.6;
+  /* Dim all other blocks with IDs */
+  .editor [data-sd-block-id]:not([data-sd-block-id="${activeFindingId}"]) {
+      opacity: 0.5;
+      filter: grayscale(100%);
+      transition: opacity 0.3s ease, filter 0.3s ease;
   }
   
-  [data-id="${activeFindingId}"] {
-      background-color: rgba(59, 130, 246, 0.15) !important;
+  /* Highlight active block */
+  .editor [data-sd-block-id="${activeFindingId}"] {
+      background-color: rgba(59, 130, 246, 0.1) !important;
       border-left-color: #3b82f6 !important;
-      border-left-width: 5px !important;
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      /* Keep border width same (3px) but change color, use shadow for emphasis */
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
       opacity: 1 !important;
+      filter: none !important;
+      color: #000 !important;
+      z-index: 10;
   }
   ` : ''}
   
