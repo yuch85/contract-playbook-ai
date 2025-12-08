@@ -1,10 +1,12 @@
+
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
-import { getClauseExtension } from '../ClauseExtension';
 import { calculateWordDiff, DIFF_DELETE, DIFF_INSERT, DIFF_EQUAL } from '../../utils/diff';
+import { RiskLevel } from '../../types';
 
 interface SuperdocEditorProps {
     file: File | null;
     activeFindingId: string | null;
+    clauseMetadata?: Map<string, { risk: RiskLevel; status: string }>;
     user?: { name: string; email: string };
     readOnly?: boolean;
     onEditorReady?: () => void;
@@ -43,71 +45,10 @@ export interface SuperdocEditorHandle {
 
 const DEFAULT_USER = { name: 'Reviewer', email: 'reviewer@example.com' };
 
-// --- ROBUST JSON CLEANING STRATEGY ---
-
-// Helper: Recursively validate and count node types for debugging
-const logNodeTypes = (node: any, counts: Record<string, number> = {}) => {
-    if (!node || typeof node !== 'object') return counts;
-    
-    const type = node.type || '[MISSING_TYPE]';
-    counts[type] = (counts[type] || 0) + 1;
-
-    if (node.content && Array.isArray(node.content)) {
-        node.content.forEach((child: any) => logNodeTypes(child, counts));
-    }
-    return counts;
-};
-
-// Helper: Recursively clean the tree.
-// RETURNS: An ARRAY of valid nodes.
-export const cleanNodeTree = (node: any): any[] => {
-    // 1. Invalid Node Check
-    if (!node || typeof node !== 'object') return [];
-    
-    // STRICT: Every node MUST have a type.
-    if (!node.type) {
-        return [];
-    }
-
-    // 2. Blacklist: Strip Metadata Nodes that crash exporters
-    if (['bookmarkStart', 'bookmarkEnd', 'tab'].includes(node.type)) {
-        return [];
-    }
-
-    // 3. Unwrap Logic: Flatten unsupported containers
-    // We unwrap:
-    // - 'clause' (our custom AI wrapper)
-    // - 'run' (Word import artifact, often breaks text)
-    // - 'orderedList', 'bulletList', 'listItem' (CamelCase types often missing in standard exporters)
-    // - 'table', 'tableRow', 'tableCell' (CamelCase types often missing in standard exporters)
-    // - 'tableHeader'
-    // This effectively flattens the doc to linear paragraphs to guarantee export success.
-    const NODES_TO_UNWRAP = [
-        'clause', 'run', 
-        'orderedList', 'bulletList', 'listItem', 
-        'table', 'tableRow', 'tableCell', 'tableHeader'
-    ];
-
-    if (NODES_TO_UNWRAP.includes(node.type)) {
-        if (!node.content || !Array.isArray(node.content)) return [];
-        // Flatten children by recursing on them
-        return node.content.flatMap((child: any) => cleanNodeTree(child));
-    }
-
-    // 4. Standard Node Preservation
-    const newNode = { ...node };
-
-    // Recurse on content if it exists
-    if (newNode.content && Array.isArray(newNode.content)) {
-        newNode.content = newNode.content.flatMap((child: any) => cleanNodeTree(child));
-    }
-
-    return [newNode];
-};
-
 const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
     file,
     activeFindingId,
+    clauseMetadata,
     user = DEFAULT_USER,
     readOnly = false,
     onEditorReady,
@@ -143,12 +84,57 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         return text.trim();
     };
 
+    // --- GLOBAL METADATA EXTENSION ---
+    // Injects id, risk, and status attributes into standard blocks
+    const getGlobalMetadataExtension = () => {
+        const w = window as any;
+        if (!w.SuperDocLibrary || !w.SuperDocLibrary.Extensions) return null;
+        
+        const { Extension } = w.SuperDocLibrary.Extensions;
+        
+        return Extension.create({
+            name: 'globalMetadata',
+            addGlobalAttributes() {
+                return [
+                    {
+                        types: ['paragraph', 'heading', 'listItem', 'bulletList', 'orderedList'],
+                        attributes: {
+                            id: {
+                                default: null,
+                                parseHTML: (element: HTMLElement) => element.getAttribute('data-id'),
+                                renderHTML: (attributes: any) => {
+                                    if (!attributes.id) return {};
+                                    return { 'data-id': attributes.id };
+                                },
+                            },
+                            risk: {
+                                default: null,
+                                parseHTML: (element: HTMLElement) => element.getAttribute('data-risk'),
+                                renderHTML: (attributes: any) => {
+                                    if (!attributes.risk) return {};
+                                    return { 'data-risk': attributes.risk };
+                                },
+                            },
+                            status: {
+                                default: 'original',
+                                parseHTML: (element: HTMLElement) => element.getAttribute('data-status'),
+                                renderHTML: (attributes: any) => {
+                                    if (!attributes.status) return {};
+                                    return { 'data-status': attributes.status };
+                                },
+                            }
+                        },
+                    },
+                ];
+            },
+        });
+    };
+
     const assembleClauseContext = (clauseId: string, options: ClauseContextOptions = {}): ClauseAssemblyOutput | null => {
         const editor = editorInstanceRef.current;
         if (!editor || !editor.activeEditor) return null;
         const { state } = editor.activeEditor;
         const { doc } = state;
-
         const { prevClauses = 1, nextClauses = 1, maxContextChars = 2000 } = options;
 
         let targetNode: any = null;
@@ -157,8 +143,9 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         let parentNode: any = null;
 
         try {
+            // Find node by native ID attribute
             doc.descendants((node: any, pos: number, parent: any, index: number) => {
-                if (node.type.name === 'clause' && node.attrs.id === clauseId) {
+                if (node.attrs.id === clauseId) {
                     targetNode = node;
                     targetPos = pos;
                     targetIndex = index;
@@ -167,39 +154,31 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                 }
                 return true;
             });
-        } catch (e) {
-            console.error("Error finding clause", e);
-            return null;
-        }
+        } catch (e) { console.error("Error finding clause", e); return null; }
 
         if (!targetNode) {
-            console.warn(`[ClauseAssembly] Clause ID ${clauseId} not found.`);
+            console.warn(`[ClauseAssembly] Block ID ${clauseId} not found.`);
             return null;
         }
 
         const rawTargetText = extractNodeText(targetNode);
-
         let prevText = "";
         let nextText = "";
         let contextStart = targetPos;
         let contextEnd = targetPos + targetNode.nodeSize;
         let truncated = false;
 
+        // Context assembly logic remains similar, but works on standard blocks
         if (parentNode) {
             let charsCollected = 0;
-
             for (let i = 1; i <= prevClauses; i++) {
                 const idx = targetIndex - i;
                 if (idx < 0) break;
-
                 const sibling = parentNode.child(idx);
                 const text = extractNodeText(sibling);
-
                 if (maxContextChars && (charsCollected + text.length) > maxContextChars) {
                     const remaining = maxContextChars - charsCollected;
-                    if (remaining > 0) {
-                        prevText = text.slice(-remaining) + "\n" + prevText;
-                    }
+                    if (remaining > 0) prevText = text.slice(-remaining) + "\n" + prevText;
                     truncated = true;
                     break;
                 } else {
@@ -208,20 +187,15 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                 }
                 contextStart -= sibling.nodeSize;
             }
-
             charsCollected = 0;
             for (let i = 1; i <= nextClauses; i++) {
                 const idx = targetIndex + i;
                 if (idx >= parentNode.childCount) break;
-
                 const sibling = parentNode.child(idx);
                 const text = extractNodeText(sibling);
-
                 if (maxContextChars && (charsCollected + text.length) > maxContextChars) {
                     const remaining = maxContextChars - charsCollected;
-                    if (remaining > 0) {
-                        nextText += text.slice(0, remaining);
-                    }
+                    if (remaining > 0) nextText += text.slice(0, remaining);
                     truncated = true;
                     break;
                 } else {
@@ -232,25 +206,14 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             }
         }
 
-        const output: ClauseAssemblyOutput = {
+        return {
             target: `<target_clause id="${clauseId}">${rawTargetText}</target_clause>`,
             context: `<context>${prevText.trim()}\n...\n${nextText.trim()}</context>`,
-            metadata: {
-                id: clauseId,
-                startPos: targetPos,
-                endPos: targetPos + targetNode.nodeSize,
-                contextStart,
-                contextEnd,
-                truncated
-            }
+            metadata: { id: clauseId, startPos: targetPos, endPos: targetPos + targetNode.nodeSize, contextStart, contextEnd, truncated }
         };
-
-        return output;
     };
 
-    const runAssemblyTestSuite = async () => {
-        console.log("Running Assembly Test Suite...");
-    };
+    const runAssemblyTestSuite = async () => { console.log("Running Assembly Test Suite..."); };
 
     useImperativeHandle(ref, () => ({
         exportDocument: async (filename: string): Promise<boolean> => {
@@ -261,70 +224,16 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             }
 
             const safeName = filename.endsWith('.docx') ? filename : `${filename}.docx`;
-            console.log(`[Superdoc] Attempting export of ${safeName}...`);
-
-            const { state, view } = editor.activeEditor;
-            
-            // --- JSON TRANSFORMATION STRATEGY ---
-            console.log('📦 Preparing clean document structure (JSON Strategy)...');
-            
-            try { 
-                if (editor.activeEditor.commands.trackChanges) {
-                    editor.activeEditor.commands.trackChanges(false);
-                }
-            } catch(e) { console.warn("Could not disable track changes", e); }
+            console.log(`[Superdoc] Attempting native export of ${safeName}...`);
 
             try {
-                // 1. Get JSON
-                const originalJSON = state.doc.toJSON();
-
-                // 2. Clean JSON (Returns array of nodes)
-                const cleanNodes = cleanNodeTree(originalJSON);
-                
-                let cleanJSON = cleanNodes.length > 0 ? cleanNodes[0] : null;
-
-                if (!cleanJSON || cleanJSON.type !== 'doc') {
-                    throw new Error("Failed to generate valid clean document JSON.");
-                }
-
-                // FIX: Ensure 'doc' does not contain direct text nodes (which unwrap can produce)
-                // ProseMirror Schema requires 'doc' to contain blocks.
-                if (cleanJSON.content && Array.isArray(cleanJSON.content)) {
-                    cleanJSON.content = cleanJSON.content.map((child: any) => {
-                         if (child.type === 'text') {
-                             // Wrap orphan text in paragraph
-                             return { type: 'paragraph', content: [child] };
-                         }
-                         return child;
-                    });
-                }
-
-                // DIAGNOSTIC: Log types to ensure no ghost nodes
-                const nodeCounts = logNodeTypes(cleanJSON);
-                console.log("Pre-Export Node Types:", nodeCounts);
-
-                // 3. Create Clean Doc Node from Schema
-                const schema = state.schema;
-                const cleanDocNode = schema.nodeFromJSON(cleanJSON);
-
-                // 4. Dispatch Replace
-                const tr = state.tr;
-                tr.replaceWith(0, state.doc.content.size, cleanDocNode);
-                tr.setMeta('addToHistory', true); 
-                tr.setMeta('track-changes-skip', true); 
-
-                view.dispatch(tr);
-                
-                await new Promise(r => setTimeout(r, 500));
-
-                // Execute Export
+                // SIMPLIFIED EXPORT: Native export works because we use standard nodes.
                 const exportedBlob = await editor.activeEditor.exportDocx();
                 
                 if (!exportedBlob || !(exportedBlob instanceof Blob)) {
                     throw new Error('exportDocx returned invalid blob');
                 }
 
-                // Re-wrap with specific DOCX mime type to prevent browser from defaulting to ZIP
                 const blob = new Blob([exportedBlob], { 
                     type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" 
                 });
@@ -344,18 +253,6 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                 console.error('❌ Export failed:', error);
                 alert(`Export failed: ${error.message}`);
                 return false;
-            } finally {
-                // Restore State
-                console.log('Restoring editor state...');
-                try {
-                    editor.activeEditor.commands.undo();
-                } catch(e) { console.error("Undo failed", e); }
-                
-                try {
-                    if (editor.activeEditor.commands.trackChanges) {
-                        editor.activeEditor.commands.trackChanges(true);
-                    }
-                } catch(e) {}
             }
         },
         setDocumentContent: (html: string) => {
@@ -364,77 +261,42 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             try { editor.activeEditor.commands.setContent(html); } catch (e) { }
         },
         applyTrackedChange: async (originalText: string, newText: string, attribution?: string): Promise<boolean> => {
-            console.warn("Using deprecated applyTrackedChange. Use updateClause instead.");
+            console.warn("Using deprecated applyTrackedChange.");
             return false;
         },
         structureDocument: () => {
             const editor = editorInstanceRef.current;
             if (!editor || !editor.activeEditor) return;
             const pmEditor = editor.activeEditor;
-
-            console.group("[Clause Model] Structuring Document");
             const { state, view } = pmEditor;
 
-            if (!state.schema.nodes.clause) {
-                console.error("CRITICAL: 'clause' node type missing from schema.");
-                console.groupEnd();
-                return;
-            }
+            console.group("[Doc Structure] Assigning Native IDs");
+            const tr = state.tr;
+            let count = 0;
 
-            const clauseType = state.schema.nodes.clause;
-            if (typeof clauseType.spec.toDOM !== 'function') {
-                clauseType.spec.toDOM = (node: any) => {
-                    return ['div', {
-                        'data-type': 'clause',
-                        'class': 'sd-clause-node',
-                        'data-clause-id': node.attrs.id,
-                        'data-risk': node.attrs.risk || 'neutral',
-                        'data-status': node.attrs.status || 'original'
-                    }, 0];
-                };
-            }
-
-            const nodesToWrap: { pos: number, node: any }[] = [];
-
-            state.doc.content.forEach((node: any, offset: number) => {
-                const absStart = offset + 1;
-                if (node.isBlock && node.type.name !== 'clause') {
+            // Iterate all blocks. If they don't have an ID, assign one.
+            state.doc.descendants((node: any, pos: number) => {
+                if (node.isBlock) {
                     const hasText = node.textContent && node.textContent.trim().length > 0;
-                    const isList = node.type.name.includes('List');
-                    const isTable = node.type.name === 'table';
-                    if (hasText || isList || isTable) {
-                        nodesToWrap.push({ pos: absStart, node: node });
+                    const isList = node.type.name.includes('List') || node.type.name === 'listItem';
+                    const isHeading = node.type.name === 'heading';
+
+                    if ((hasText || isList || isHeading) && !node.attrs.id) {
+                        const id = generateUUID();
+                        // Only set if the schema allows the 'id' attribute (added by our GlobalMetadataExtension)
+                        tr.setNodeMarkup(pos, undefined, { ...node.attrs, id, status: 'original' });
+                        count++;
                     }
                 }
+                return true; // continue traversal
             });
 
-            if (nodesToWrap.length === 0) {
-                console.warn("Structure: No blocks found to wrap.");
-                console.groupEnd();
-                return;
-            }
-
-            const tr = state.tr;
-            let wrappedCount = 0;
-            const Fragment = state.doc.content.constructor;
-
-            for (let i = nodesToWrap.length - 1; i >= 0; i--) {
-                const { pos, node } = nodesToWrap[i];
-                const id = generateUUID();
-                try {
-                    const fragment = Fragment.from(node);
-                    const clauseNode = clauseType.create({ id, status: 'original' }, fragment);
-                    tr.replaceWith(pos, pos + node.nodeSize, clauseNode);
-                    wrappedCount++;
-                } catch (e) {
-                    console.warn(`Failed to structure block at ${pos}. Skipping. Error:`, e);
-                }
-            }
-
             if (tr.docChanged) {
-                try { view.dispatch(tr); } catch (e) { console.error("Dispatch failed:", e); }
+                view.dispatch(tr);
+                console.log(`Assigned IDs to ${count} blocks.`);
+            } else {
+                console.log("Document already structured.");
             }
-            console.log(`Successfully structured document. Processed ${wrappedCount} blocks.`);
             console.groupEnd();
         },
         getClauses: () => {
@@ -442,8 +304,17 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             if (!editor || !editor.activeEditor) return [];
             const { state } = editor.activeEditor;
             const clauses: any[] = [];
+            const seenBlockIds = new Set<string>(); // Prevent duplicates
+            
+            // Extract all blocks with IDs
             state.doc.descendants((node: any, pos: number) => {
-                if (node.type.name === 'clause') {
+                if (node.attrs.id) {
+                    // Skip if we've already processed this block ID (prevents recursion/traversal duplicates)
+                    if (seenBlockIds.has(node.attrs.id)) {
+                        return true;
+                    }
+                    seenBlockIds.add(node.attrs.id);
+
                     clauses.push({
                         id: node.attrs.id,
                         text: extractNodeText(node),
@@ -451,7 +322,6 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                         startPos: pos,
                         nodeSize: node.nodeSize
                     });
-                    return false;
                 }
                 return true;
             });
@@ -461,14 +331,13 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             const editor = editorInstanceRef.current;
             if (!editor || !editor.activeEditor) return false;
             
-            console.group(`[Diffing] Update Clause ${clauseId}`);
-
+            console.group(`[Diffing] Update Block ${clauseId}`);
             const { state, view } = editor.activeEditor;
             let clausePos: number | null = null;
             let clauseNode: any = null;
 
             state.doc.descendants((node: any, pos: number) => {
-                if (node.type.name === 'clause' && node.attrs.id === clauseId) {
+                if (node.attrs.id === clauseId) {
                     clausePos = pos;
                     clauseNode = node;
                     return false;
@@ -477,46 +346,34 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             });
 
             if (clausePos === null || !clauseNode) {
-                console.error(`Clause node not found for ID: ${clauseId}`);
+                console.error(`Block node not found for ID: ${clauseId}`);
                 console.groupEnd();
                 return false;
             }
 
+            // Enable Track Changes
             try {
-                let modeEnabled = false;
-                if (typeof editor.setDocumentMode === 'function') {
-                    editor.setDocumentMode('suggesting');
-                    modeEnabled = true;
-                } else if (editor.activeEditor?.commands?.trackChanges) {
-                    editor.activeEditor.commands.trackChanges(true);
-                    modeEnabled = true;
-                }
-                if (!modeEnabled) console.warn('⚠️ Could not enable track changes');
+                if (typeof editor.setDocumentMode === 'function') editor.setDocumentMode('suggesting');
+                else if (editor.activeEditor?.commands?.trackChanges) editor.activeEditor.commands.trackChanges(true);
             } catch (error) { console.error('Track changes error:', error); }
 
+            // Build Position Map
             const positionMap: number[] = [];
             let textBuffer = '';
-
             clauseNode.descendants((node: any, pos: number) => {
                 if (node.isText) {
                     const absolutePos = (clausePos as number) + 1 + pos;
                     const text = node.text || '';
-                    for (let i = 0; i < text.length; i++) {
-                        positionMap.push(absolutePos + i);
-                    }
+                    for (let i = 0; i < text.length; i++) { positionMap.push(absolutePos + i); }
                     textBuffer += text;
                 }
                 return true;
             });
 
-            if (positionMap.length === 0) {
-                console.error('No text found in clause');
-                console.groupEnd();
-                return false;
-            }
+            if (positionMap.length === 0) { console.error('No text in block'); console.groupEnd(); return false; }
 
+            // Calculate Diff
             const diffs = calculateWordDiff(textBuffer, newText);
-
             const { state: initialState, dispatch } = editor.activeEditor.view;
             let tr = initialState.tr;
             let textIndex = 0;
@@ -524,28 +381,20 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
 
             diffs.forEach((part) => {
                 const token = part.text;
-
                 if (part.op === DIFF_EQUAL) {
                     textIndex += token.length;
                 } else if (part.op === DIFF_DELETE) {
                     const baseDocPos = positionMap[textIndex];
                     const endTextIndex = Math.min(textIndex + token.length - 1, positionMap.length - 1);
                     const baseEndDocPos = positionMap[endTextIndex] + 1;
-
                     const actualDocPos = baseDocPos + mapOffset;
                     const actualEndDocPos = baseEndDocPos + mapOffset;
-
                     tr = tr.delete(actualDocPos, actualEndDocPos);
-
-                    const deletedLength = actualEndDocPos - actualDocPos;
-                    mapOffset -= deletedLength;
+                    mapOffset -= (actualEndDocPos - actualDocPos);
                     textIndex += token.length;
                 } else if (part.op === DIFF_INSERT) {
-                    const baseDocPos = textIndex < positionMap.length
-                        ? positionMap[textIndex]
-                        : positionMap[positionMap.length - 1] + 1;
+                    const baseDocPos = textIndex < positionMap.length ? positionMap[textIndex] : positionMap[positionMap.length - 1] + 1;
                     const actualDocPos = baseDocPos + mapOffset;
-
                     tr = tr.insertText(token, actualDocPos);
                     mapOffset += token.length;
                 }
@@ -553,9 +402,16 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
 
             dispatch(tr);
             
+            // Mark Status as Pending
             const { state: finalState, dispatch: finalDispatch } = editor.activeEditor.view;
-            const finalTr = finalState.tr.setNodeMarkup(clausePos, undefined, { ...clauseNode.attrs, status: 'pending' });
-            finalDispatch(finalTr);
+            // Note: We use the ID to find the node again as positions might have shifted
+            let newPos = -1;
+            finalState.doc.descendants((n: any, p: number) => { if (n.attrs.id === clauseId) { newPos = p; return false; } return true; });
+            
+            if (newPos !== -1) {
+                const finalTr = finalState.tr.setNodeMarkup(newPos, undefined, { ...finalState.doc.nodeAt(newPos).attrs, status: 'pending' });
+                finalDispatch(finalTr);
+            }
 
             console.groupEnd();
             return true;
@@ -563,6 +419,35 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         assembleClauseContext,
         runAssemblyTestSuite
     }));
+
+    // Sync Clause Metadata (Styling)
+    useEffect(() => {
+        const editor = editorInstanceRef.current;
+        if (!editor || !editor.activeEditor || !clauseMetadata) return;
+        
+        const { state, view } = editor.activeEditor;
+        let tr = state.tr;
+        let modified = false;
+
+        // Traverse doc and apply risk/status attributes from metadata map
+        state.doc.descendants((node: any, pos: number) => {
+            const id = node.attrs.id;
+            if (id && clauseMetadata.has(id)) {
+                const meta = clauseMetadata.get(id);
+                if (meta && (node.attrs.risk !== meta.risk || node.attrs.status !== meta.status)) {
+                    tr = tr.setNodeMarkup(pos, undefined, { ...node.attrs, risk: meta.risk, status: meta.status });
+                    modified = true;
+                }
+            }
+            return true;
+        });
+
+        if (modified) {
+            tr.setMeta('addToHistory', false); // Don't pollute undo stack with styling updates
+            view.dispatch(tr);
+        }
+
+    }, [clauseMetadata]); // Re-run when metadata map changes
 
     const loadSuperdocScript = (): Promise<void> => {
         return new Promise((resolve, reject) => {
@@ -578,15 +463,26 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         });
     };
 
+    // Scroll to active clause
+    useEffect(() => {
+        if (!activeFindingId || status !== 'ready') return;
+        // Use data-id selector (injected by our GlobalMetadataExtension)
+        const clauseElement = document.querySelector(`[data-id="${activeFindingId}"]`);
+        if (clauseElement) {
+            clauseElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, [activeFindingId, status]);
+
     useEffect(() => {
         if (!activeFindingId || !onClearSelection || status !== 'ready') return;
 
         const container = document.getElementById(CONTAINER_ID);
         const handleClick = (e: MouseEvent) => {
             const target = e.target as HTMLElement;
-            const clickedClause = target.closest('.sd-clause-node');
-            if (clickedClause) {
-                const clickedId = clickedClause.getAttribute('data-clause-id');
+            // Check for element with data-id
+            const clickedBlock = target.closest('[data-id]');
+            if (clickedBlock) {
+                const clickedId = clickedBlock.getAttribute('data-id');
                 if (clickedId !== activeFindingId) {
                     onClearSelection();
                 }
@@ -595,12 +491,8 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
             }
         };
 
-        if (container) {
-            container.addEventListener('click', handleClick, true);
-        }
-        return () => {
-            if (container) container.removeEventListener('click', handleClick, true);
-        };
+        if (container) container.addEventListener('click', handleClick, true);
+        return () => { if (container) container.removeEventListener('click', handleClick, true); };
     }, [activeFindingId, onClearSelection, status]);
 
     useEffect(() => {
@@ -670,8 +562,10 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
                 try {
                     const containerEl = document.getElementById(CONTAINER_ID);
                     if (containerEl) containerEl.innerHTML = '';
-                    const ClauseExtension = getClauseExtension();
-                    const extensions = ClauseExtension ? [ClauseExtension] : [];
+                    
+                    // Use GlobalMetadataExtension instead of ClauseExtension
+                    const MetadataExt = getGlobalMetadataExtension();
+                    const extensions = MetadataExt ? [MetadataExt] : [];
 
                     const config: any = {
                         selector: `#${CONTAINER_ID}`,
@@ -716,18 +610,6 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
         return () => { isMounted = false; cleanup(); };
     }, [file, readOnly, user]);
 
-    useEffect(() => {
-        if (!activeFindingId || status !== 'ready') return;
-
-        const clauseElement = document.querySelector(`[data-clause-id="${activeFindingId}"]`);
-        if (clauseElement) {
-            clauseElement.scrollIntoView({
-                behavior: 'smooth',
-                block: 'center'
-            });
-        }
-    }, [activeFindingId, status]);
-
     if (status === 'missing_lib') return <div>Superdoc Library Not Found</div>;
     if (status === 'error') return <div>Editor Error: {errorMessage}</div>;
 
@@ -754,7 +636,10 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
   .editor { padding: 2.5rem; }
   .super-editor, .ProseMirror { color: #000 !important; }
   
-  .sd-clause-node {
+  /* NATIVE BLOCK STYLING via attributes */
+  
+  /* Base style for any block with an ID */
+  [data-id] {
       border-left: 3px solid transparent;
       padding-left: 10px;
       margin-left: -13px;
@@ -762,33 +647,39 @@ const SuperdocEditor = forwardRef<SuperdocEditorHandle, SuperdocEditorProps>(({
       position: relative;
   }
   
-  .sd-clause-node:hover {
+  [data-id]:hover {
       border-left-color: #cbd5e1;
       background-color: rgba(241, 245, 249, 0.3);
   }
   
-  .sd-clause-node[data-risk="red"] {
+  /* Risk Levels */
+  [data-risk="red"] {
       border-left-color: #ef4444;
       background-color: rgba(254, 226, 226, 0.2);
   }
-  
-  .sd-clause-node[data-status="pending"] {
+  [data-risk="yellow"] {
       border-left-color: #f59e0b;
-      background-color: rgba(255, 251, 235, 0.3);
+      background-color: rgba(255, 251, 235, 0.2);
   }
   
+  /* Status */
+  [data-status="pending"] {
+      /* Highlight pending changes */
+      background-color: rgba(255, 251, 235, 0.4);
+  }
+  
+  /* Active Finding Highlight */
   ${activeFindingId ? `
-  .sd-clause-node:not([data-clause-id="${activeFindingId}"]) {
-      opacity: 0.5;
+  [data-id]:not([data-id="${activeFindingId}"]) {
+      opacity: 0.6;
   }
   
-  .sd-clause-node[data-clause-id="${activeFindingId}"] {
+  [data-id="${activeFindingId}"] {
       background-color: rgba(59, 130, 246, 0.15) !important;
       border-left-color: #3b82f6 !important;
       border-left-width: 5px !important;
       box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
       opacity: 1 !important;
-      margin: 16px 0;
   }
   ` : ''}
   

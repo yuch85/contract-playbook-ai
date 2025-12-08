@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { ReviewSessionState, AnalysisFinding, AppMode, Playbook } from './types';
+import { ReviewSessionState, AnalysisFinding, AppMode, Playbook, RiskLevel } from './types';
 import { wordAdapter } from './services/wordAdapter';
 import { analyzeDocumentWithGemini, generatePlaybookFromDocument, detectPartiesFromDocument, parsePlaybookFromText, enrichPlaybookWithEmbeddings } from './services/geminiService';
 import RiskCard from './components/RiskCard';
@@ -37,6 +37,9 @@ export default function App() {
     // Settings State
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [appSettings, setAppSettings] = useState<AppSettings>({});
+
+    // New: Clause Metadata for styling (Decoupled from findings)
+    const [clauseMetadata, setClauseMetadata] = useState<Map<string, { risk: RiskLevel; status: string }>>(new Map());
 
     // Editor Ref
     const editorRef = useRef<SuperdocEditorHandle>(null);
@@ -79,8 +82,8 @@ export default function App() {
             status: 'mode_selection',
             uploadedFile: file
         }));
-        // Reset editor readiness when new file is loaded
         setIsEditorReady(false);
+        setClauseMetadata(new Map()); // Reset metadata
     };
 
     // Helper: Trigger party detection
@@ -234,7 +237,7 @@ export default function App() {
         setSession(prev => ({
             ...prev,
             status: 'scanning',
-            progressMessage: 'Structuring document for analysis...'
+            progressMessage: 'Indexing document blocks...'
         }));
 
         await new Promise(r => setTimeout(r, 100));
@@ -251,24 +254,27 @@ export default function App() {
             }
 
             try {
-                setSession(prev => ({ ...prev, progressMessage: 'Identifying clauses...' }));
+                setSession(prev => ({ ...prev, progressMessage: 'Assigning block IDs...' }));
+                // 1. Structure the doc (assign IDs to native blocks)
                 editorRef.current.structureDocument();
 
-                await new Promise(r => setTimeout(r, 1500));
+                await new Promise(r => setTimeout(r, 500));
 
+                // 2. Extract blocks with IDs
                 const extractedClauses = editorRef.current.getClauses();
-                console.log(`Extracted ${extractedClauses.length} clauses from Editor.`);
+                console.log(`Extracted ${extractedClauses.length} blocks from Editor.`);
 
                 if (extractedClauses.length === 0) {
-                    console.warn("No clauses extracted. Attempting fallback structure...");
+                    console.warn("No blocks found. Retrying structure...");
                     editorRef.current.structureDocument();
-                    await new Promise(r => setTimeout(r, 1500));
+                    await new Promise(r => setTimeout(r, 500));
                     const retryClauses = editorRef.current.getClauses();
                     if (retryClauses.length > 0) {
                         extractedClauses.push(...retryClauses);
                     }
                 }
 
+                // 3. Create Shadow Document for Analysis
                 const editorDoc = {
                     metadata: {
                         filename: session.uploadedFile?.name || 'document.docx',
@@ -284,9 +290,17 @@ export default function App() {
 
                 setSession(prev => ({ ...prev, status: 'analyzing', progressMessage: 'Analyzing contract against playbook...', document: editorDoc }));
 
+                // 4. Run AI Analysis
                 const findings = await analyzeDocumentWithGemini(editorDoc, playbook, session.userParty, (msg) => {
                     setSession(prev => ({ ...prev, progressMessage: msg }));
                 });
+
+                // 5. Update Metadata for Styling (Map ID -> Risk/Status)
+                const newMetadata = new Map<string, { risk: RiskLevel; status: string }>();
+                findings.forEach(f => {
+                    newMetadata.set(f.target_id, { risk: f.risk_level, status: 'original' });
+                });
+                setClauseMetadata(newMetadata);
 
                 setSession(prev => ({
                     ...prev,
@@ -330,34 +344,18 @@ export default function App() {
         }
     };
     
-    // Integration Test: Inject clauses and export via Editor
+    // Integration Test
     const handleIntegrationExportTest = async (): Promise<boolean> => {
-        if (!editorRef.current) {
-             console.error("Editor not initialized for export test");
-             return false;
-        }
-        
+        if (!editorRef.current) return false;
         try {
-            // Seed content with nested clauses
             const testHtml = `
-                <h1>Integration Test Document</h1>
-                <p>Root paragraph with standard text.</p>
-                <div data-type="clause" data-clause-id="c1" class="sd-clause-node" data-risk="red">
-                    <p>Clause Level 1 (Top)</p>
-                    <div data-type="clause" data-clause-id="c2" class="sd-clause-node" data-risk="yellow">
-                         <p>Clause Level 2 (Nested)</p>
-                    </div>
-                </div>
-                <p>Closing paragraph.</p>
+                <h1>Integration Test</h1>
+                <p data-id="c1" data-risk="red">Test Clause 1</p>
+                <p data-id="c2" data-risk="green">Test Clause 2</p>
             `;
-            
             editorRef.current.setDocumentContent(testHtml);
-            
-            // Wait for render/extensions to process
             await new Promise(r => setTimeout(r, 500));
-            
-            // Trigger actual export
-            return await editorRef.current.exportDocument('Superdoc_Recursive_Export_Test');
+            return await editorRef.current.exportDocument('Superdoc_Native_Export_Test');
         } catch (e) {
             console.error("Integration Export Test Failed:", e);
             return false;
@@ -366,7 +364,7 @@ export default function App() {
 
     const handleCardClick = useCallback((finding: AnalysisFinding) => {
         setSession(prev => ({ ...prev, activeFindingId: finding.target_id }));
-        setMobileMenuOpen(false); // Close menu on mobile after selection
+        setMobileMenuOpen(false);
     }, []);
 
     const handleAccept = async (id: string, text: string) => {
@@ -375,14 +373,24 @@ export default function App() {
             const success = await editorRef.current.updateClause(id, text, session.userParty);
 
             if (success) {
+                // Update Findings State
                 setSession(prev => ({
                     ...prev,
                     findings: prev.findings.map(f =>
                         f.target_id === id ? { ...f, status: 'resolved', suggested_text: text } : f
                     )
                 }));
+                // Update Styling Metadata
+                setClauseMetadata(prev => {
+                    const next = new Map(prev);
+                    const current = next.get(id);
+                    if (current) {
+                        next.set(id, { ...current, status: 'pending' }); // Mark visually as pending
+                    }
+                    return next;
+                });
             } else {
-                alert("Failed to apply change. The clause may have been deleted or modified externally.");
+                alert("Failed to apply change. The block may have been deleted.");
             }
         }
     };
@@ -393,6 +401,12 @@ export default function App() {
             findings: prev.findings.filter(f => f.target_id !== id),
             activeFindingId: null
         }));
+        // Remove styling
+        setClauseMetadata(prev => {
+            const next = new Map(prev);
+            next.delete(id);
+            return next;
+        });
     };
 
     const handleRestart = () => {
@@ -415,17 +429,13 @@ export default function App() {
         setShowTestRunner(false);
         setIsEditorReady(false);
         setMobileMenuOpen(false);
+        setClauseMetadata(new Map());
     };
 
     const handleSaveAs = () => {
         console.log('💾 Save button clicked!');
-
-        // Use default filename (prompt blocked by iframe sandbox)
         const baseFilename = session.document?.metadata.filename.replace('.docx', '') || 'reviewed_contract';
         const filename = `${baseFilename}_reviewed`;
-
-        console.log('📝 Export filename:', filename);
-        console.log('📂 editorRef exists?', !!editorRef.current);
 
         if (editorRef.current) {
             editorRef.current.exportDocument(filename);
@@ -435,7 +445,6 @@ export default function App() {
         setMobileMenuOpen(false);
     };
 
-    // Render logic for the Editor
     const shouldRenderEditor = () => {
         const activeStates = ['review_ready', 'editor_debug', 'scanning', 'analyzing'];
         return activeStates.includes(session.status);
@@ -778,6 +787,7 @@ export default function App() {
                             ref={editorRef}
                             file={session.uploadedFile}
                             activeFindingId={session.activeFindingId}
+                            clauseMetadata={clauseMetadata}
                             user={editorUser}
                             onEditorReady={() => setIsEditorReady(true)}
                             onClearSelection={() => setSession(prev => ({ ...prev, activeFindingId: null }))}

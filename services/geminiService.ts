@@ -316,18 +316,33 @@ The Provider's liability shall not exceed the fees paid in the preceding 12 mont
 `;
 
 // Hybrid Batching Constants
-const MAX_CHARS_PER_BATCH = 10000;
-const MAX_CLAUSES_PER_BATCH = 10;
+const MAX_CHARS_PER_BATCH = 40000;
 
 const createChunks = (document: ShadowDocument): string[] => {
     const chunks: string[] = [];
     let currentChunk = "";
     let currentClauseCount = 0;
     
+    // Calculate average block size for dynamic batching
+    if (document.paragraphs.length === 0) return [];
+    
+    const totalChars = document.paragraphs.reduce((sum, p) => sum + p.text.length, 0);
+    const avgBlockSize = totalChars / document.paragraphs.length;
+    
+    // Dynamic clause limit based on average block size
+    let dynamicMaxClauses: number;
+    if (avgBlockSize < 200) {
+        dynamicMaxClauses = 50; // Small blocks - allow more
+    } else if (avgBlockSize < 500) {
+        dynamicMaxClauses = 30; // Medium blocks
+    } else {
+        dynamicMaxClauses = 18; // Large blocks - fewer per batch
+    }
+    
     for (const p of document.paragraphs) {
         const pText = `<<CLAUSE id="${p.id}">>\n${p.text}\n<<END_CLAUSE>>\n\n`;
         const willExceedChars = (currentChunk.length + pText.length) > MAX_CHARS_PER_BATCH;
-        const willExceedClauses = (currentClauseCount + 1) > MAX_CLAUSES_PER_BATCH;
+        const willExceedClauses = (currentClauseCount + 1) > dynamicMaxClauses;
 
         if ((willExceedChars || willExceedClauses) && currentChunk.length > 0) {
             chunks.push(currentChunk);
@@ -366,6 +381,69 @@ async function generateContentWithRetry(ai: GoogleGenAI, params: any, retries = 
     }
 }
 
+// Helper for concurrent execution (Limit: 3 concurrent requests to avoid 429s)
+const runWithConcurrencyLimit = async <T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> => {
+    const results: T[] = [];
+    const executing: Promise<void>[] = [];
+    
+    for (const task of tasks) {
+        const p = task().then(result => {
+            results.push(result);
+        });
+        executing.push(p);
+        
+        // Remove self from executing list when done
+        p.finally(() => {
+             const index = executing.indexOf(p);
+             if (index > -1) executing.splice(index, 1);
+        });
+
+        if (executing.length >= limit) {
+            await Promise.race(executing);
+        }
+    }
+    await Promise.all(executing);
+    return results;
+};
+
+// Helper for single embedding
+export const generateEmbedding = async (ai: GoogleGenAI, text: string): Promise<number[] | null> => {
+    if (!text || text.trim().length === 0) return null;
+    try {
+        const result = await ai.models.embedContent({
+            model: 'text-embedding-004',
+            content: { parts: [{ text }] }
+        });
+        return result.embedding?.values || null;
+    } catch (e) {
+        console.warn("Embedding generation failed", e);
+        return null;
+    }
+};
+
+// Helper for batch embeddings
+export const generateEmbeddingsBatch = async (ai: GoogleGenAI, texts: string[]): Promise<(number[] | null)[]> => {
+    // 1. Filter out empty strings to avoid API errors
+    const validItems = texts.map((t, i) => ({ text: t, index: i })).filter(item => item.text.trim().length > 0);
+    if (validItems.length === 0) return texts.map(() => null);
+
+    // 2. Prepare requests using runWithConcurrencyLimit instead of batchEmbedContents to avoid SDK issues
+    const tasks = validItems.map(item => async () => {
+         const embedding = await generateEmbedding(ai, item.text);
+         return { index: item.index, embedding };
+    });
+
+    const results = await runWithConcurrencyLimit(tasks, 3);
+    
+    // 3. Map back to original order
+    const finalOutput = new Array(texts.length).fill(null);
+    results.forEach(r => {
+        finalOutput[r.index] = r.embedding;
+    });
+    
+    return finalOutput;
+};
+
 export interface AnalysisTestConfig {
     temperature?: number;
     systemPromptOverride?: string;
@@ -383,6 +461,8 @@ export const analyzeDocumentWithGemini = async (
     const ai = getClient();
     const chunks = createChunks(document);
     let allFindings: AnalysisFinding[] = [];
+    const seenIds = new Set<string>(); // Track processed IDs
+    const seenTextHashes = new Map<string, string>(); // Track text content to detect duplicates
 
     onProgress?.(`Splitting document into ${chunks.length} analysis batches...`);
 
@@ -395,6 +475,15 @@ export const analyzeDocumentWithGemini = async (
             const chunkText = chunk.replace(/<<CLAUSE[^>]*>>/g, '').replace(/<<END_CLAUSE>>/g, '');
             const relevantCategories = classifyClauseLocally(chunkText, playbook.rules);
             
+            // Check relevance threshold (Skip logic)
+            // If the best category match score is < 4 (e.g. fewer than 2 keyword hits), we skip
+            const maxScore = Math.max(...relevantCategories.map(c => c.score));
+            if (maxScore < 4) {
+                 console.log(`Skipping batch ${i} - low relevance score (${maxScore})`);
+                 debugLog?.(`batch_${i}_skipped`, `Score: ${maxScore}`);
+                 continue;
+            }
+
             // Only send top matching rules to LLM
             const relevantRules = relevantCategories
                 .flatMap(c => c.matchingRules)
@@ -442,9 +531,27 @@ ${chunk}
             const findings = mapIRToFindings(irClauses);
 
             for (const f of findings) {
-                if (!allFindings.some(existing => existing.target_id === f.target_id)) {
-                    allFindings.push(f);
+                // Check 1: Have we seen this exact ID before?
+                if (seenIds.has(f.target_id)) {
+                    console.warn(`Skipping duplicate finding for ID: ${f.target_id}`);
+                    continue;
                 }
+                
+                // Check 2: Is this the same text content as another finding?
+                // Use a simple hash of the original text to detect content duplicates
+                // Hash: First 100 chars + Length (Simple but effective for exact text matches)
+                const textHash = `${f.original_text.trim().toLowerCase().substring(0, 100)}_${f.original_text.length}`;
+                const existingIdForText = seenTextHashes.get(textHash);
+                
+                if (existingIdForText && existingIdForText !== f.target_id) {
+                    console.warn(`Skipping duplicate finding with same content. Original ID: ${existingIdForText}, Duplicate ID: ${f.target_id}`);
+                    continue;
+                }
+                
+                // Add to tracking sets
+                seenIds.add(f.target_id);
+                seenTextHashes.set(textHash, f.target_id);
+                allFindings.push(f);
             }
 
         } catch (error) {
@@ -519,30 +626,72 @@ export const generatePlaybookFromDocument = async (
     onProgress?: (msg: string) => void
 ): Promise<Playbook> => {
     const ai = getClient();
-    const fullText = document.paragraphs.map(p => p.text).join('\n').substring(0, 30000);
     
-    onProgress?.("Extracting rules from document...");
+    onProgress?.("Scanning document structure (semantic sampling)...");
+    
+    // SMART SAMPLING: Instead of taking first 5 chunks, embed chunks and find "Legal Centroids"
+    // 1. Chunk full doc
+    const rawChunks = createChunks(document).map(c => c.replace(/<<CLAUSE[^>]*>>/g, '').replace(/<<END_CLAUSE>>/g, ''));
+    const validChunks = rawChunks.filter(c => c.length > 500); // Filter tiny chunks
+    
+    // 2. Define Centroids (The "perfect" paragraphs for these topics)
+    const centroids = [
+        "Indemnification: The Provider shall indemnify Customer against third party claims.",
+        "Liability: The total liability of either party shall not exceed the fees paid.",
+        "Termination: This agreement may be terminated for cause upon 30 days notice.",
+        "Warranties: The Services will be performed in a professional manner.",
+        "Confidentiality: Receiving Party shall not disclose Confidential Information."
+    ];
+    
+    // 3. Embed everything (Batch)
+    const allTextsToEmbed = [...centroids, ...validChunks];
+    const allEmbeddings = await generateEmbeddingsBatch(ai, allTextsToEmbed);
+    
+    const centroidEmbeddings = allEmbeddings.slice(0, centroids.length);
+    const chunkEmbeddings = allEmbeddings.slice(centroids.length);
+    
+    // 4. Score chunks: Max similarity to ANY centroid
+    const scoredChunks = validChunks.map((chunk, i) => {
+        const chunkEmb = chunkEmbeddings[i];
+        if (!chunkEmb) return { chunk, score: 0 };
+        
+        let maxSim = 0;
+        for (const centEmb of centroidEmbeddings) {
+             if (centEmb) {
+                 const sim = cosineSimilarity(chunkEmb, centEmb);
+                 if (sim > maxSim) maxSim = sim;
+             }
+        }
+        return { chunk, score: maxSim };
+    });
+    
+    // 5. Pick Top 8 most "Legally Dense" chunks
+    scoredChunks.sort((a, b) => b.score - a.score);
+    const topChunks = scoredChunks.slice(0, 8).map(s => s.chunk);
+    const selectedText = topChunks.join('\n\n---\n\n');
+    
+    onProgress?.("Extracting rules from prioritized sections...");
+
     // Suggest default categories but allow LLM to add contract-specific ones
     const suggestedCategories = Object.keys(DEFAULT_CATEGORIES).join(', ');
-    const prompt = `Extract a contract playbook from this document for the "${party}".
+    
+    // Step 1: Raw Rule Extraction
+    const extractionPrompt = `Extract a contract playbook from this document for the "${party}".
 SUGGESTED CATEGORIES (use these when applicable, or create domain-specific ones):
 ${suggestedCategories}
 For each rule, provide:
 - topic: Canonical name (e.g., "Liability Cap")
 - category: Pick from suggested list OR create domain-specific (e.g., "CLINICAL_TRIALS")
 - subcategory: Optional refinement
-- signal_keywords: 3-5 keywords for matching
-- synonyms: 3-5 alternative phrases
 - preferred_position: What ${party} wants
 - reasoning: Business/legal justification
 - fallback_position: Acceptable alternative
 - suggested_drafting: Template clause
 - risk_criteria: { red, yellow, green } thresholds
-// TODO: This uses JSON for now but will migrate to IR format (Plan 1)
-// JSON accuracy degrades on long outputs; IR is more robust
 Return JSON with structure: { metadata, rules[] }
 DOCUMENT:
-${fullText}`;
+${selectedText.substring(0, 30000)}`;
+
     try {
         const response = await generateContentWithRetry(ai, {
             model: 'gemini-2.5-flash',
@@ -550,19 +699,34 @@ ${fullText}`;
                 responseMimeType: 'application/json',
                 temperature: 0.2
             },
-            contents: [{ role: 'user', parts: [{ text: prompt }] }]
+            contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }]
         });
         
         const rawPlaybook = cleanAndParseJSON(response.text || "{}", {}) as Playbook;
         
-        // Post-processing: normalize categories, generate IDs, ensure keywords
-        const processedRules = postProcessPlaybookRules(rawPlaybook.rules || []);
+        // Step 2: Taxonomy & Structure Pass (LLM-based refinement)
+        onProgress?.("Refining taxonomy and keywords...");
+        const rules = rawPlaybook.rules || [];
         
-        onProgress?.(`Extracted ${processedRules.length} rules`);
+        // Post-processing: normalize categories, generate IDs, ensure keywords
+        const processedRules = postProcessPlaybookRules(rules);
+        
+        // Step 3: Fingerprinting (Embeddings) - BATCHED
+        onProgress?.("Generating semantic fingerprints...");
+        
+        const textsToEmbed = processedRules.map(r => `${r.topic}: ${r.preferred_position}. ${r.reasoning}`);
+        const ruleEmbeddings = await generateEmbeddingsBatch(ai, textsToEmbed);
+        
+        const rulesWithEmbeddings = processedRules.map((r, i) => ({
+            ...r,
+            embedding: ruleEmbeddings[i] || null
+        }));
+        
+        onProgress?.(`Finalized ${rulesWithEmbeddings.length} rules`);
         
         return {
             metadata: { name: `${party} Playbook`, party },
-            rules: processedRules
+            rules: rulesWithEmbeddings
         };
     } catch (e) {
         console.error("Playbook gen failed", e);
@@ -620,9 +784,19 @@ ${text.substring(0, 30000)}`;
     // Post-processing: normalize and fix any issues
     const processedRules = postProcessPlaybookRules(rawPlaybook.rules || []);
     
+    // Embeddings batch pass
+    onProgress?.("Generating embeddings...");
+    const textsToEmbed = processedRules.map(r => `${r.topic}: ${r.preferred_position}`);
+    const ruleEmbeddings = await generateEmbeddingsBatch(ai, textsToEmbed);
+    
+    const rulesWithEmbeddings = processedRules.map((r, i) => ({
+        ...r,
+        embedding: ruleEmbeddings[i] || null
+    }));
+
     return {
         metadata: rawPlaybook.metadata || { name: filename, party: "Unknown" },
-        rules: processedRules
+        rules: rulesWithEmbeddings
     };
 };
 
