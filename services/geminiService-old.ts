@@ -1,29 +1,8 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { Playbook, ShadowDocument, AnalysisFinding, RiskLevel, PlaybookRule } from '../types';
-// import { detectLikelyCategories, getTopMatchingRulesByEmbedding, cosineSimilarity } from './classifier';
+import { detectLikelyCategories, getTopMatchingRulesByEmbedding, cosineSimilarity } from './classifier';
 import { parseIR, mapIRToFindings } from './irParser';
-
-/**
- * FUTURE IMPLEMENTATION: Embeddings should be used to MATCH clauses during contract review.
- * 
- * The intended use case is:
- * - When analyzing a contract clause, generate an embedding for the clause text
- * - Compare it against embeddings of playbook rules stored in a VECTOR DATABASE
- * - Use cosine similarity to find the most semantically similar playbook rules
- * - This enables matching even when wording differs but meaning is similar
- * 
- * Example: A clause saying "Provider's total responsibility shall not exceed fees paid"
- * should match a playbook rule about "Liability Cap" even if the exact wording differs.
- * 
- * IMPORTANT: Embeddings should NOT be stored in JSON files.
- * - Use a proper vector database (e.g., Pinecone, Weaviate, Qdrant)
- * - Index embeddings by rule_id for efficient lookup
- * - Keep JSON playbook files lightweight with only metadata and rule definitions
- * 
- * Currently, clause matching uses keyword-based classification (classifyClauseLocally)
- * for performance reasons (~1-2ms vs ~50-100ms for embedding lookup).
- */
 
 /**
  * DEFAULT canonical taxonomy for playbook categories.
@@ -150,9 +129,6 @@ export const postProcessPlaybookRules = (rules: PlaybookRule[]): PlaybookRule[] 
             synonyms,
             signal_keywords,
             risk_criteria,
-            // IMPORTANT: Embeddings should NOT be stored in JSON.
-            // When embeddings are implemented, use a proper vector database (e.g., Pinecone, Weaviate, Qdrant)
-            // to store rule embeddings indexed by rule_id. This avoids bloating JSON files with large arrays.
             embedding: null
         };
     });
@@ -238,7 +214,7 @@ const cleanAndParseJSON = (text: string, fallback: any = {}) => {
     }
 };
 
-// --- IR PARSING FOR PLAYBOOK RULES ---
+// --- Intermediate Representation (IR) PARSING FOR PLAYBOOK RULES ---
 
 const parseRuleIR = (text: string, originalRules: PlaybookRule[]): PlaybookRule[] => {
     console.log("--- START IR PARSE ---");
@@ -430,44 +406,43 @@ const runWithConcurrencyLimit = async <T>(tasks: (() => Promise<T>)[], limit: nu
     return results;
 };
 
-// COMMENTED OUT: Embeddings not currently used. See comment at top of file for future implementation.
 // Helper for single embedding
-// export const generateEmbedding = async (ai: GoogleGenAI, text: string): Promise<number[] | null> => {
-//     if (!text || text.trim().length === 0) return null;
-//     try {
-//         const result = await ai.models.embedContent({
-//             model: 'text-embedding-004',
-//             contents: { parts: [{ text }] }
-//         });
-//         return result.embeddings?.[0]?.values || null;
-//     } catch (e) {
-//         console.warn("Embedding generation failed", e);
-//         return null;
-//     }
-// };
+export const generateEmbedding = async (ai: GoogleGenAI, text: string): Promise<number[] | null> => {
+    if (!text || text.trim().length === 0) return null;
+    try {
+        const result = await ai.models.embedContent({
+            model: 'text-embedding-004',
+            contents: { parts: [{ text }] }
+        });
+        return result.embeddings?.[0]?.values || null;
+    } catch (e) {
+        console.warn("Embedding generation failed", e);
+        return null;
+    }
+};
 
 // Helper for batch embeddings
-// export const generateEmbeddingsBatch = async (ai: GoogleGenAI, texts: string[]): Promise<(number[] | null)[]> => {
-//     // 1. Filter out empty strings to avoid API errors
-//     const validItems = texts.map((t, i) => ({ text: t, index: i })).filter(item => item.text.trim().length > 0);
-//     if (validItems.length === 0) return texts.map(() => null);
+export const generateEmbeddingsBatch = async (ai: GoogleGenAI, texts: string[]): Promise<(number[] | null)[]> => {
+    // 1. Filter out empty strings to avoid API errors
+    const validItems = texts.map((t, i) => ({ text: t, index: i })).filter(item => item.text.trim().length > 0);
+    if (validItems.length === 0) return texts.map(() => null);
 
-//     // 2. Prepare requests using runWithConcurrencyLimit instead of batchEmbedContents to avoid SDK issues
-//     const tasks = validItems.map(item => async () => {
-//          const embedding = await generateEmbedding(ai, item.text);
-//          return { index: item.index, embedding };
-//     });
+    // 2. Prepare requests using runWithConcurrencyLimit instead of batchEmbedContents to avoid SDK issues
+    const tasks = validItems.map(item => async () => {
+         const embedding = await generateEmbedding(ai, item.text);
+         return { index: item.index, embedding };
+    });
 
-//     const results = await runWithConcurrencyLimit(tasks, 3);
+    const results = await runWithConcurrencyLimit(tasks, 3);
     
-//     // 3. Map back to original order
-//     const finalOutput = new Array(texts.length).fill(null);
-//     results.forEach(r => {
-//         finalOutput[r.index] = r.embedding;
-//     });
+    // 3. Map back to original order
+    const finalOutput = new Array(texts.length).fill(null);
+    results.forEach(r => {
+        finalOutput[r.index] = r.embedding;
+    });
     
-//     return finalOutput;
-// };
+    return finalOutput;
+};
 
 export interface AnalysisTestConfig {
     temperature?: number;
@@ -652,24 +627,47 @@ export const generatePlaybookFromDocument = async (
 ): Promise<Playbook> => {
     const ai = getClient();
     
-    onProgress?.("Scanning document structure...");
+    onProgress?.("Scanning document structure (semantic sampling)...");
     
-    // COMMENTED OUT: Semantic sampling using embeddings - replaced with simple chunk selection
-    // The LLM will scan the document and can propose additional categories beyond defaults.
-    // 
-    // OLD APPROACH (commented out):
-    // - Used embeddings to find "legally dense" chunks by comparing to centroids
-    // - This was limiting because centroids only covered 5 concepts
-    // - LLM can discover categories from the full document context
-    
-    // SIMPLE APPROACH: Take first N substantial chunks
-    // LLM will identify relevant categories from the document content itself
+    // SMART SAMPLING: Instead of taking first 5 chunks, embed chunks and find "Legal Centroids"
+    // 1. Chunk full doc
     const rawChunks = createChunks(document).map(c => c.replace(/<<CLAUSE[^>]*>>/g, '').replace(/<<END_CLAUSE>>/g, ''));
     const validChunks = rawChunks.filter(c => c.length > 500); // Filter tiny chunks
     
-    // Take top 8 chunks (or all if fewer than 8)
-    // LLM will scan these and can propose additional categories beyond DEFAULT_CATEGORIES
-    const topChunks = validChunks.slice(0, 8);
+    // 2. Define Centroids (The "perfect" paragraphs for these topics)
+    const centroids = [
+        "Indemnification: The Provider shall indemnify Customer against third party claims.",
+        "Liability: The total liability of either party shall not exceed the fees paid.",
+        "Termination: This agreement may be terminated for cause upon 30 days notice.",
+        "Warranties: The Services will be performed in a professional manner.",
+        "Confidentiality: Receiving Party shall not disclose Confidential Information."
+    ];
+    
+    // 3. Embed everything (Batch)
+    const allTextsToEmbed = [...centroids, ...validChunks];
+    const allEmbeddings = await generateEmbeddingsBatch(ai, allTextsToEmbed);
+    
+    const centroidEmbeddings = allEmbeddings.slice(0, centroids.length);
+    const chunkEmbeddings = allEmbeddings.slice(centroids.length);
+    
+    // 4. Score chunks: Max similarity to ANY centroid
+    const scoredChunks = validChunks.map((chunk, i) => {
+        const chunkEmb = chunkEmbeddings[i];
+        if (!chunkEmb) return { chunk, score: 0 };
+        
+        let maxSim = 0;
+        for (const centEmb of centroidEmbeddings) {
+             if (centEmb) {
+                 const sim = cosineSimilarity(chunkEmb, centEmb);
+                 if (sim > maxSim) maxSim = sim;
+             }
+        }
+        return { chunk, score: maxSim };
+    });
+    
+    // 5. Pick Top 8 most "Legally Dense" chunks
+    scoredChunks.sort((a, b) => b.score - a.score);
+    const topChunks = scoredChunks.slice(0, 8).map(s => s.chunk);
     const selectedText = topChunks.join('\n\n---\n\n');
     
     onProgress?.("Extracting rules from prioritized sections...");
@@ -713,34 +711,16 @@ ${selectedText.substring(0, 30000)}`;
         // Post-processing: normalize categories, generate IDs, ensure keywords
         const processedRules = postProcessPlaybookRules(rules);
         
-        // COMMENTED OUT: Embedding generation for playbook rules
         // Step 3: Fingerprinting (Embeddings) - BATCHED
-        // 
-        // FUTURE IMPLEMENTATION NOTE:
-        // - Embeddings should NOT be stored in JSON files (they bloat file size significantly)
-        // - Use a proper vector database (e.g., Pinecone, Weaviate, Qdrant) to store embeddings
-        // - Index embeddings by rule_id for efficient lookup during clause matching
-        // - Keep JSON playbook files lightweight with only metadata and rule definitions
-        //
-        // onProgress?.("Generating semantic fingerprints...");
-        // 
-        // const textsToEmbed = processedRules.map(r => `${r.topic}: ${r.preferred_position}. ${r.reasoning}`);
-        // const ruleEmbeddings = await generateEmbeddingsBatch(ai, textsToEmbed);
-        // 
-        // // Store in vector DB instead of JSON:
-        // // await vectorDB.upsert(processedRules.map((r, i) => ({
-        // //     id: r.rule_id,
-        // //     vector: ruleEmbeddings[i],
-        // //     metadata: { topic: r.topic, category: r.category }
-        // // })));
-        // 
-        // const rulesWithEmbeddings = processedRules.map((r, i) => ({
-        //     ...r,
-        //     embedding: ruleEmbeddings[i] || null  // DON'T DO THIS - use vector DB instead
-        // }));
+        onProgress?.("Generating semantic fingerprints...");
         
-        // Embeddings set to null (handled in postProcessPlaybookRules)
-        const rulesWithEmbeddings = processedRules;
+        const textsToEmbed = processedRules.map(r => `${r.topic}: ${r.preferred_position}. ${r.reasoning}`);
+        const ruleEmbeddings = await generateEmbeddingsBatch(ai, textsToEmbed);
+        
+        const rulesWithEmbeddings = processedRules.map((r, i) => ({
+            ...r,
+            embedding: ruleEmbeddings[i] || null
+        }));
         
         onProgress?.(`Finalized ${rulesWithEmbeddings.length} rules`);
         
@@ -804,32 +784,15 @@ ${text.substring(0, 30000)}`;
     // Post-processing: normalize and fix any issues
     const processedRules = postProcessPlaybookRules(rawPlaybook.rules || []);
     
-    // COMMENTED OUT: Embedding generation
     // Embeddings batch pass
-    //
-    // FUTURE IMPLEMENTATION NOTE:
-    // - Embeddings should NOT be stored in JSON files (they bloat file size significantly)
-    // - Use a proper vector database (e.g., Pinecone, Weaviate, Qdrant) to store embeddings
-    // - Index embeddings by rule_id for efficient lookup during clause matching
-    //
-    // onProgress?.("Generating embeddings...");
-    // const textsToEmbed = processedRules.map(r => `${r.topic}: ${r.preferred_position}`);
-    // const ruleEmbeddings = await generateEmbeddingsBatch(ai, textsToEmbed);
-    // 
-    // // Store in vector DB instead of JSON:
-    // // await vectorDB.upsert(processedRules.map((r, i) => ({
-    // //     id: r.rule_id,
-    // //     vector: ruleEmbeddings[i],
-    // //     metadata: { topic: r.topic, category: r.category }
-    // // })));
-    // 
-    // const rulesWithEmbeddings = processedRules.map((r, i) => ({
-    //     ...r,
-    //     embedding: ruleEmbeddings[i] || null  // DON'T DO THIS - use vector DB instead
-    // }));
+    onProgress?.("Generating embeddings...");
+    const textsToEmbed = processedRules.map(r => `${r.topic}: ${r.preferred_position}`);
+    const ruleEmbeddings = await generateEmbeddingsBatch(ai, textsToEmbed);
     
-    // Embeddings set to null (handled in postProcessPlaybookRules)
-    const rulesWithEmbeddings = processedRules;
+    const rulesWithEmbeddings = processedRules.map((r, i) => ({
+        ...r,
+        embedding: ruleEmbeddings[i] || null
+    }));
 
     return {
         metadata: rawPlaybook.metadata || { name: filename, party: "Unknown" },

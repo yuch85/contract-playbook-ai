@@ -26,10 +26,6 @@ These are high-impact additions that improve the workflow for legal professional
 **Goal:** Allow interactive dialogue with the document.
 *   **Task:** Build a UI (sidebar or modal) where users can ask ad-hoc questions ("Does this contract have a non-solicit?") or instruct the AI to refine a specific finding interactively.
 
-### **4. Undo button**
-**Goal:** Allow AI applied edits to be undone.
-*  **Task:** Put an Undo button in the side panel allowimg users to undo AI-applied edits. Investigate cleanest way to do it using Superdoc functionality or more long term to build a Viewer module using MVP approach.
-
 ---
 
 ## 🛠️ Technical / Engineering Challenges
@@ -50,11 +46,13 @@ These are complex tasks involving the core engine, data serialization, and backe
 **Goal:** Improve performance and efficiency of LLM interactions.
 *   **Current State:** LLM calls are processed sequentially in batches, which can be slow for large documents.
 *   **Tasks:**
-    *   Implement concurrent/parallel batch processing where API rate limits allow (requires amendment to deduplication logic to avoid race conditions)
+    *   Implement concurrent/parallel batch processing where API rate limits allow
     *   Optimize batch sizing based on token limits and API constraints
     *   Add request queuing and retry logic with exponential backoff
+    *   Implement request deduplication to avoid redundant API calls
     *   Cache responses for identical inputs where appropriate
     *   Optimize prompt engineering to reduce token usage while maintaining accuracy
+    *   Consider streaming responses for better UX during long operations
     *   **Party Detection Optimization:** Currently party detection runs only after user selects "Review Contract" mode, creating a blocking delay. Consider moving party detection to start immediately on file upload (background processing), with a lightweight contract check to avoid unnecessary LLM calls for non-contract documents. Cache results so they're ready when the user reaches party selection.
 
 ### **4. Multi-Provider LLM Architecture** (Medium Priority)

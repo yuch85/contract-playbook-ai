@@ -285,7 +285,7 @@ const PlaybookTable: React.FC<PlaybookTableProps> = ({ playbook, onUpdate }) => 
     return (
         <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col h-full relative">
             {/* Toolbar */}
-            <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0">
                 <div className="flex items-center gap-4 flex-1">
                     <div className="flex-1 max-w-lg space-y-2">
                         {/* Editable Name */}
@@ -334,13 +334,13 @@ const PlaybookTable: React.FC<PlaybookTableProps> = ({ playbook, onUpdate }) => 
                 <table className="min-w-full text-left text-sm border-separate border-spacing-0">
                     <thead className="bg-gray-100 text-gray-700 uppercase font-semibold sticky top-0 z-10 shadow-sm">
                         <tr>
-                            <th className="px-4 py-3 border-b border-gray-200 w-12 text-center">#</th>
-                            <th className="px-4 py-3 border-b border-gray-200 w-32">Category</th>
-                            <th className="px-4 py-3 border-b border-gray-200 w-48">Topic & Keywords</th>
-                            <th className="px-4 py-3 border-b border-gray-200 w-64">Preferred Position</th>
-                            <th className="px-4 py-3 border-b border-gray-200 w-64">Reasoning</th>
-                            <th className="px-4 py-3 border-b border-gray-200 w-48">Fallback</th>
-                            <th className="px-4 py-3 border-b border-gray-200 min-w-[250px]">Drafting</th>
+                            <th className="px-4 py-3 border-b border-gray-200 w-12 text-center bg-gray-100">#</th>
+                            <th className="px-4 py-3 border-b border-gray-200 w-32 bg-gray-100">Category</th>
+                            <th className="px-4 py-3 border-b border-gray-200 w-48 bg-gray-100">Topic & Keywords</th>
+                            <th className="px-4 py-3 border-b border-gray-200 w-64 bg-gray-100">Preferred Position</th>
+                            <th className="px-4 py-3 border-b border-gray-200 w-64 bg-gray-100">Reasoning</th>
+                            <th className="px-4 py-3 border-b border-gray-200 w-48 bg-gray-100">Fallback</th>
+                            <th className="px-4 py-3 border-b border-gray-200 min-w-[250px] bg-gray-100">Drafting</th>
                             <th className="px-4 py-3 border-b border-gray-200 w-24 text-center sticky right-0 bg-gray-100 shadow-l">Act</th>
                         </tr>
                     </thead>
@@ -360,15 +360,15 @@ const PlaybookTable: React.FC<PlaybookTableProps> = ({ playbook, onUpdate }) => 
 
                              return (
                                 <tr key={idx} className={`group ${showModifiedHighlight ? 'bg-purple-50 hover:bg-purple-100' : 'hover:bg-blue-50/30'}`}>
-                                    <td className="px-2 py-3 font-mono text-xs text-gray-400 text-center">{idx + 1}</td>
+                                    <td className="px-2 py-6 font-mono text-sm text-gray-400 text-center">{idx + 1}</td>
                                     
                                     {/* Category & Subcategory */}
-                                    <td className="px-2 py-3 text-xs align-top">
+                                    <td className="px-3 py-6 align-top">
                                         <input 
                                             type="text" 
                                             value={rule.category || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'category', e.target.value)}
-                                            className="w-full font-bold text-gray-800 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 mb-1 placeholder-gray-300 disabled:opacity-50"
+                                            className="w-full font-bold text-gray-800 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 mb-2 placeholder-gray-300 disabled:opacity-50 text-sm"
                                             placeholder="CAT"
                                             disabled={isDisabled}
                                         />
@@ -376,78 +376,78 @@ const PlaybookTable: React.FC<PlaybookTableProps> = ({ playbook, onUpdate }) => 
                                             type="text" 
                                             value={rule.subcategory || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'subcategory', e.target.value)}
-                                            className="w-full text-gray-500 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 placeholder-gray-300 disabled:opacity-50"
+                                            className="w-full text-gray-500 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 placeholder-gray-300 disabled:opacity-50 text-xs"
                                             placeholder="SUB"
                                             disabled={isDisabled}
                                         />
                                     </td>
 
                                     {/* Topic & Keywords */}
-                                    <td className="px-2 py-3 align-top">
+                                    <td className="px-3 py-6 align-top">
                                         <input 
                                             type="text" 
                                             value={rule.topic || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'topic', e.target.value)}
-                                            className="w-full font-medium text-gray-900 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 mb-1 disabled:opacity-50"
+                                            className="w-full font-medium text-gray-900 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 mb-2 disabled:opacity-50 text-sm"
                                             disabled={isDisabled}
                                         />
                                         <textarea 
-                                            rows={2}
+                                            rows={3}
                                             value={(rule.signal_keywords || []).join(', ')}
                                             onChange={(e) => !isDisabled && handleKeywordsChange(idx, e.target.value)}
-                                            className="w-full text-xs text-blue-600 bg-blue-50/50 border-none focus:ring-1 focus:ring-blue-500 rounded px-1 resize-none disabled:opacity-50"
+                                            className="w-full text-xs text-blue-600 bg-blue-50/50 border-none focus:ring-1 focus:ring-blue-500 rounded px-1 resize-none disabled:opacity-50 min-h-[60px]"
                                             placeholder="Keywords..."
                                             disabled={isDisabled}
                                         />
                                     </td>
 
                                     {/* Preferred Position */}
-                                    <td className="px-2 py-3 align-top">
+                                    <td className="px-3 py-6 align-top">
                                         <textarea 
-                                            rows={3}
+                                            rows={5}
                                             value={rule.preferred_position || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'preferred_position', e.target.value)}
-                                            className="w-full text-xs text-green-800 bg-green-50/30 border border-transparent focus:border-green-300 focus:bg-white focus:ring-1 focus:ring-green-500 rounded px-2 py-1 resize-y disabled:opacity-50"
+                                            className="w-full text-sm text-green-800 bg-green-50/30 border border-transparent focus:border-green-300 focus:bg-white focus:ring-1 focus:ring-green-500 rounded px-2 py-1 resize-y disabled:opacity-50 min-h-[100px] leading-relaxed"
                                             disabled={isDisabled}
                                         />
                                     </td>
 
                                     {/* Reasoning */}
-                                    <td className="px-2 py-3 align-top">
+                                    <td className="px-3 py-6 align-top">
                                         <textarea 
-                                            rows={3}
+                                            rows={5}
                                             value={rule.reasoning || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'reasoning', e.target.value)}
-                                            className="w-full text-xs text-gray-600 italic bg-transparent border border-transparent focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 resize-y disabled:opacity-50"
+                                            className="w-full text-sm text-gray-600 italic bg-transparent border border-transparent focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 resize-y disabled:opacity-50 min-h-[100px] leading-relaxed"
                                             disabled={isDisabled}
                                         />
                                     </td>
 
                                     {/* Fallback */}
-                                    <td className="px-2 py-3 align-top">
+                                    <td className="px-3 py-6 align-top">
                                         <textarea 
-                                            rows={3}
+                                            rows={5}
                                             value={rule.fallback_position || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'fallback_position', e.target.value)}
-                                            className="w-full text-xs text-gray-700 bg-transparent border border-transparent focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 resize-y disabled:opacity-50"
+                                            className="w-full text-sm text-gray-700 bg-transparent border border-transparent focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 resize-y disabled:opacity-50 min-h-[100px] leading-relaxed"
                                             disabled={isDisabled}
                                         />
                                     </td>
 
                                     {/* Drafting */}
-                                    <td className="px-2 py-3 align-top">
+                                    <td className="px-3 py-6 align-top">
                                         <textarea 
-                                            rows={4}
+                                            rows={8}
                                             value={rule.suggested_drafting || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'suggested_drafting', e.target.value)}
-                                            className="w-full text-[10px] font-mono text-gray-700 bg-gray-50 border border-gray-200 focus:border-blue-300 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 resize-y leading-tight disabled:opacity-50"
+                                            className="w-full text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 focus:border-blue-300 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 resize-y leading-relaxed disabled:opacity-50 min-h-[150px]"
                                             placeholder="Legal text..."
                                             disabled={isDisabled}
                                         />
                                     </td>
 
                                     {/* Row Actions */}
-                                    <td className={`px-2 py-3 align-top text-center sticky right-0 border-l border-gray-100 ${showModifiedHighlight ? 'bg-purple-50' : 'bg-white group-hover:bg-blue-50/30'}`}>
+                                    <td className={`px-2 py-6 align-top text-center sticky right-0 border-l border-gray-100 ${showModifiedHighlight ? 'bg-purple-50' : 'bg-white group-hover:bg-blue-50/30'}`}>
                                         <div className="flex flex-col gap-2 items-center">
                                             <button 
                                                 onClick={() => handleOpenAiModal(rule.rule_id || '')}
@@ -455,7 +455,7 @@ const PlaybookTable: React.FC<PlaybookTableProps> = ({ playbook, onUpdate }) => 
                                                 title="AI Refine this Rule"
                                                 disabled={isDisabled}
                                             >
-                                                <Wand2 className="w-4 h-4" />
+                                                <Wand2 className="w-5 h-5" />
                                             </button>
                                             
                                             {isModified && (

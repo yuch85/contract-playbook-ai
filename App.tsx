@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ReviewSessionState, AnalysisFinding, AppMode, Playbook, RiskLevel } from './types';
 import { wordAdapter } from './services/wordAdapter';
@@ -764,7 +765,7 @@ export default function App() {
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="overflow-y-auto p-3 flex-1 space-y-3">
+                            <div className="overflow-y-auto p-3 flex-1 h-full min-h-0 space-y-3">
                                 {session.findings.map(finding => (
                                     <RiskCard
                                         key={finding.target_id}

@@ -1,7 +1,8 @@
+
 import React, { useState, useEffect } from 'react';
 import { AnalysisFinding } from '../types';
 import DiffViewer from './DiffViewer';
-import { Edit2, Check, X } from 'lucide-react';
+import { Edit2, Check, X, Info } from 'lucide-react';
 
 interface DetailViewProps {
   finding: AnalysisFinding;
@@ -17,30 +18,57 @@ const DetailView: React.FC<DetailViewProps> = ({ finding, onAccept, onReject }) 
   // Reset local state when finding changes
   useEffect(() => {
     setIsEditing(false);
-    setEditedText(finding.suggested_text);
+    
+    const text = finding.suggested_text || "";
+    // Normalize text to check for "no change" indicators
+    const clean = text.trim().toLowerCase().replace(/[.,]/g, '');
+    const noChangePhrases = [
+        'no rewrite necessary', 
+        'no changes required', 
+        'no changes', 
+        'no change',
+        'none', 
+        'n/a', 
+        'no suggested rewrite',
+        'compliant'
+    ];
+    
+    // Check if the suggestion is effectively a "no-op"
+    const isNoOp = noChangePhrases.some(p => clean === p || clean.startsWith('no changes')) || text.trim() === finding.original_text.trim();
+
+    if (isNoOp) {
+        // If no changes needed, revert to original text so DiffViewer shows no redlines
+        setEditedText(finding.original_text);
+    } else {
+        setEditedText(text);
+    }
   }, [finding]);
 
   const handleSave = () => {
     onAccept(finding.target_id, editedText);
   };
 
+  const hasChanges = editedText.trim() !== finding.original_text.trim();
+
   return (
     <div className="flex flex-col h-full bg-white md:border-l border-gray-200 shadow-xl overflow-hidden w-full">
-      {/* Header */}
+      {/* Header - Fixed Height */}
       <div className="p-4 border-b border-gray-100 bg-gray-50 shrink-0">
         <div className="flex justify-between items-start gap-2">
             <h2 className="text-lg font-bold text-gray-800 break-words">{finding.issue_type}</h2>
             {isResolved && <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-bold rounded-full border border-green-200 whitespace-nowrap">ACCEPTED</span>}
         </div>
+      </div>
+
+      {/* Content - Scrollable Area */}
+      {/* Reasoning moved here to prevent cramping the layout */}
+      <div className="p-4 flex-1 overflow-y-auto min-h-0 space-y-6">
         
-        <div className="mt-2 text-sm text-gray-600 bg-white p-3 rounded border border-gray-200 shadow-sm">
+        {/* AI Reasoning */}
+        <div className="text-sm text-gray-600 bg-white p-3 rounded border border-gray-200 shadow-sm">
             <span className="font-semibold text-gray-900 block mb-1">AI Reasoning:</span>
             <span className="leading-relaxed">{finding.reasoning}</span>
         </div>
-      </div>
-
-      {/* Content */}
-      <div className="p-4 flex-1 overflow-y-auto space-y-4">
         
         {/* Diff / Editor Area */}
         <div className="space-y-2">
@@ -58,9 +86,17 @@ const DetailView: React.FC<DetailViewProps> = ({ finding, onAccept, onReject }) 
                 )}
             </div>
 
+            {/* Informational Banner if No Changes */}
+            {!hasChanges && !isEditing && (
+                <div className="px-3 py-2 bg-blue-50 text-blue-700 text-xs rounded border border-blue-100 flex items-center gap-2">
+                    <Info className="w-4 h-4 shrink-0" />
+                    <span>AI suggests no changes to the text.</span>
+                </div>
+            )}
+
             {isEditing ? (
                 <textarea
-                    className="w-full h-64 p-3 text-sm border border-blue-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none leading-relaxed resize-none"
+                    className="w-full h-64 p-3 text-sm border border-blue-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none leading-relaxed resize-none font-serif"
                     value={editedText}
                     onChange={(e) => setEditedText(e.target.value)}
                 />
@@ -85,10 +121,11 @@ const DetailView: React.FC<DetailViewProps> = ({ finding, onAccept, onReject }) 
                 </button>
                 <button
                     onClick={handleSave}
-                    className="flex-[2] flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm font-medium text-sm"
+                    className={`flex-[2] flex items-center justify-center gap-2 px-4 py-2.5 text-white rounded-lg transition-colors shadow-sm font-medium text-sm
+                        ${hasChanges ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}`}
                 >
                     <Check className="w-4 h-4" />
-                    {isEditing ? 'Save & Apply' : 'Accept Change'}
+                    {isEditing ? 'Save & Apply' : (hasChanges ? 'Accept Change' : 'Mark Reviewed')}
                 </button>
             </>
         ) : (
