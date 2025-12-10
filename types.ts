@@ -22,7 +22,6 @@ export interface PlaybookRule {
     yellow: string;
     red: string;
   };
-  embedding: number[] | null; // Changed from optional (?) to nullable so it persists in JSON
 }
 
 export interface Playbook {

@@ -377,7 +377,7 @@ const PlaybookTable: React.FC<PlaybookTableProps> = ({ playbook, onUpdate }) => 
                                             value={rule.subcategory || ''}
                                             onChange={(e) => !isDisabled && handleRuleChange(idx, 'subcategory', e.target.value)}
                                             className="w-full text-gray-500 bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-1 placeholder-gray-300 disabled:opacity-50 text-xs"
-                                            placeholder=""
+                                            placeholder="SUB"
                                             disabled={isDisabled}
                                         />
                                     </td>

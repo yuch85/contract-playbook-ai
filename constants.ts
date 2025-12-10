@@ -16,8 +16,7 @@ export const SAMPLE_PLAYBOOK: Playbook = {
         green: "Mutual indemnification included.",
         yellow: "Unilateral but capped.",
         red: "Unilateral, uncapped, or missing provider protections."
-      },
-      embedding: null
+      }
     },
     {
       rule_id: "LIAB_01",
@@ -32,8 +31,7 @@ export const SAMPLE_PLAYBOOK: Playbook = {
         green: "Capped at 12 months, mutual.",
         yellow: "Capped > 12 months or super caps exist.",
         red: "Unlimited liability or < 6 months cap."
-      },
-      embedding: null
+      }
     },
     {
         rule_id: "GOV_01",
@@ -48,8 +46,7 @@ export const SAMPLE_PLAYBOOK: Playbook = {
             green: "Delaware or New York.",
             yellow: "California or UK.",
             red: "Any other jurisdiction."
-        },
-        embedding: null
+        }
     }
   ]
 };

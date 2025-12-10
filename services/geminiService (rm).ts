@@ -589,30 +589,24 @@ export const generatePlaybookFromDocument = async (
     
     onProgress?.("Scanning document structure...");
     
-    // Process all chunks to ensure complete playbook coverage
+    // SIMPLE APPROACH: Take first N substantial chunks
+    // LLM will identify relevant categories from the document content itself
     // Keep clause structure so LLM can reference specific clauses for suggested_drafting
     const rawChunks = createChunks(document);
     const validChunks = rawChunks.filter(c => c.length > 500); // Filter tiny chunks
     
-    onProgress?.(`Processing ${validChunks.length} document sections...`);
+    // Take top 8 chunks (or all if fewer than 8)
+    // LLM will scan these and can propose additional categories beyond DEFAULT_CATEGORIES
+    const topChunks = validChunks.slice(0, 8);
+    const selectedText = topChunks.join('\n\n---\n\n');
+    
+    onProgress?.("Extracting rules from prioritized sections...");
 
     // Suggest default categories but allow LLM to add contract-specific ones
     const suggestedCategories = Object.keys(DEFAULT_CATEGORIES).join(', ');
     
-    // Process each chunk sequentially with separate LLM calls
-    let allRules: PlaybookRule[] = [];
-    
-    for (let i = 0; i < validChunks.length; i++) {
-        const chunk = validChunks[i];
-        onProgress?.(`Extracting rules from section ${i + 1} of ${validChunks.length}...`);
-
-        // Step 1: Raw Rule Extraction for this chunk
-        const extractionPrompt = `Extract a contract playbook from this document section for the "${party}".
-
-IMPORTANT: Skip non-substantive content
-- Do NOT extract rules from signature blocks, execution pages, table of contents, headers, footers, or purely administrative content
-- Focus ONLY on substantive contractual clauses that define rights, obligations, or terms
-- If a clause section contains only signatures, dates, or administrative information, skip it entirely
+    // Step 1: Raw Rule Extraction
+    const extractionPrompt = `Extract a contract playbook from this document for the "${party}".
 
 CATEGORY TAXONOMY:
 Use these DEFAULT CATEGORIES when applicable:
@@ -648,40 +642,37 @@ For each rule, provide:
 - risk_criteria: { red, yellow, green } thresholds
 Return JSON with structure: { metadata, rules[] }
 DOCUMENT:
-${chunk}`;
+${selectedText.substring(0, 30000)}`;
 
-        try {
-            const response = await generateContentWithRetry(ai, {
-                model: 'gemini-2.5-flash',
-                config: { 
-                    responseMimeType: 'application/json',
-                    temperature: 0.2
-                },
-                contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }]
-            });
-            
-            const chunkPlaybook = cleanAndParseJSON(response.text || "{}", {}) as Playbook;
-            const chunkRules = chunkPlaybook.rules || [];
-            allRules = [...allRules, ...chunkRules];
-            
-        } catch (e) {
-            console.error(`Chunk ${i + 1} failed:`, e);
-            // Continue processing other chunks even if one fails
-        }
+    try {
+        const response = await generateContentWithRetry(ai, {
+            model: 'gemini-2.5-flash',
+            config: { 
+                responseMimeType: 'application/json',
+                temperature: 0.2
+            },
+            contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }]
+        });
+        
+        const rawPlaybook = cleanAndParseJSON(response.text || "{}", {}) as Playbook;
+        
+        // Step 2: Taxonomy & Structure Pass (LLM-based refinement)
+        onProgress?.("Refining taxonomy and keywords...");
+        const rules = rawPlaybook.rules || [];
+        
+        // Post-processing: normalize categories, generate IDs, ensure keywords
+        const processedRules = postProcessPlaybookRules(rules);
+        
+        onProgress?.(`Finalized ${processedRules.length} rules`);
+        
+        return {
+            metadata: { name: `${party} Playbook`, party },
+            rules: processedRules
+        };
+    } catch (e) {
+        console.error("Playbook gen failed", e);
+        throw e;
     }
-    
-    // Step 2: Taxonomy & Structure Pass (LLM-based refinement)
-    onProgress?.("Refining taxonomy and keywords...");
-    
-    // Post-processing: normalize categories, generate IDs, ensure keywords
-    const processedRules = postProcessPlaybookRules(allRules);
-    
-    onProgress?.(`Finalized ${processedRules.length} rules`);
-    
-    return {
-        metadata: { name: `${party} Playbook`, party },
-        rules: processedRules
-    };
 };
 
 /**
