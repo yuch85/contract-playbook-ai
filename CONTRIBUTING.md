@@ -28,13 +28,13 @@ These are high-impact additions that improve the workflow for legal professional
 
 ### **4. Extract Tracked Changes as Suggested Drafting**
 **Goal:** Extract lawyer edits from a reviewed clause and populate playbook rules with that "gold standard" language.
-*   **Task:** Use Superdoc's trackChangesHelpers.getAllChanges(editor.state) to get tracked changes, filter by clause position, then update the matching playbook rule's suggested_drafting field with the final accepted text.
-Detail: Match clause to rule using classifyClauseLocally(). Create UI button "Extract as Gold Standard" that identifies the relevant rule and shows before/after comparison.
+*   **Task:** No Superdoc built-in method exists to extract changes from a specific document section. Use Superdoc's trackChangesHelpers.getAllChanges(editor.state) to get tracked changes, filter by clause position, then update the matching playbook rule's suggested_drafting field with the final accepted text.
+*   **Detail:** Match clause to rule using classifyClauseLocally(). Create UI button "Extract as Gold Standard" that identifies the relevant rule and shows before/after comparison.
 
-###**5. Undo Accepted Playbook Changes**
+### **5. Undo Accepted Playbook Changes**
 **Goal:** Allow users to revert document edits after accepting AI suggestions.
 *   **Task:** Before applying changes, store a snapshot (finding_id, original range, original content). Add "Undo" button to accepted findings that restores the original text using editor.commands.insertContent().
-Detail: Store snapshots in React state or IndexedDB. Handle edge cases where document structure changes after acceptance may invalidate positions.
+*   **Detail:** Store snapshots in React state. Handle edge cases where document structure changes after acceptance may invalidate positions.
 
 ---
 
